@@ -41,6 +41,17 @@ from application schema allowlists.
 Native v2 uses the core's enabled KRAM policy. V1 follows the core v1 processor;
 no connection or request toggles shared authentication settings.
 
+To inspect a persisted application decision locally, authenticate its identity:
+
+```sh
+dolly inspect --name verifier --base BASE --grant GRANT_SAID --no-prompt
+```
+
+The JSON includes `state`, `reason`, projected `payload`, and `delivered`; an
+unknown grant has `state="unknown"`. This opens Dolly's submission store read-only.
+`accepted` means reporting policy passed; `delivered` records a hook 2xx response.
+It does not independently revalidate proof or establish current freshness.
+
 Historical inspection is the Python API `Context.inspectHistorical(grantSaid)`.
 It reads retained authenticated native evidence, labels standing unevaluated,
 and never emits an acceptance hook or freshness/publication-time claim.
@@ -55,4 +66,13 @@ KERI_SOURCE=/absolute/path/to/qualified/keripy scripts/check.sh
 
 The script builds and installs actual KERIpy and Dolly wheels. The Docker image
 contains the copied tests; imports resolve to installed packages, not editable
-checkouts. Exact source state and artifact hashes are reported during the build.
+checkouts. Exact source state and artifact hashes are reported during the build. Released
+1.2.14/1.3.6 peers run in isolated dependency images with pinned source hashes:
+
+```sh
+DOLLY_MATRIX_IMAGE=dolly-v2-refactor:dev scripts/legacy-peers/check.sh
+```
+
+The qualification scripts do not call KERIpy's qualification wrapper, avoiding a
+cross-repository invocation cycle. See [provenance](docs/provenance.md) for exact
+module and symbol ancestry.
