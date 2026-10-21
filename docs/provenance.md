@@ -265,3 +265,14 @@ schema is permissive structural validation, not an issuer allowlist or acceptanc
 policy. It is needed when Locksmith sends a credential with a schema digest
 instead of an embedded schema; Dolly still enforces its configured issuer,
 schema and field policy. It is loaded only when explicitly requested.
+
+## Additive community qualification pin
+
+Dolly `4b4142dce4b07314d5a894053da7226b41df1fc3` pins KERIpy
+`993b58266992b786d044fd3938e114a19d76f62f` for the common community profile.
+This follow-up changes dependency metadata only; the runtime Python symbols
+remain covered by the preceding ledger. The only new application resource since
+the earlier clean pair is the explicitly selected native map schema described
+above, with its immutable Samuel M Smith source lineage and manifest digest.
+The new common-profile executions remain separate from the earlier published
+qualification report, whose source SHAs and results are historical facts.
