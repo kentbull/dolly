@@ -256,3 +256,12 @@ Commit `8da5d71` changes only the KERIpy dependency pin from the earlier value t
 execution and the provenance of the later report, README link, and copied public
 result/transcript/proof artifacts. Those are locally compiled execution evidence,
 not an additional upstream code or idea attribution claim.
+
+The optional `acm-default-v2` packaged schema is the exact committed schema
+returned by KERIpy `acmSchemaDefault` at `64b5c6af`. Git blame traces that function
+to Samuel M Smith's `18dd8825` in the former `src/keri/vc/messaging.py`.
+Packaging and explicit scenario selection are local integration decisions. The
+schema is permissive structural validation, not an issuer allowlist or acceptance
+policy. It is needed when Locksmith sends a credential with a schema digest
+instead of an embedded schema; Dolly still enforces its configured issuer,
+schema and field policy. It is loaded only when explicitly requested.

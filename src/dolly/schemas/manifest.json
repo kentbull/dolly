@@ -12,5 +12,12 @@
     "provenance": "Local test fixture; not an external ecosystem schema",
     "source": "Locally designed during standalone Dolly extraction; non-vLEI entitlement contract",
     "sourceAuthor": "Agent-generated fixture under Kent's extraction request"
+  },
+  "acm-default-v2": {
+    "file": "acm-default-v2.json",
+    "said": "EPrsJF2BXyDUgDCVbGURsGNwCZjyrxD5M2qnBmhvoZYQ",
+    "provenance": "Pinned upstream default acm shape for explicit R&D scenarios; not application authorization",
+    "source": "kentbull/keripy 64b5c6afc9d23e05e3135353b3396cce28712ce8 src/keri/acdc/messaging.py::acmSchemaDefault; original 18dd8825 src/keri/vc/messaging.py",
+    "sourceAuthor": "Samuel M Smith (original function Git attribution)"
   }
 }
