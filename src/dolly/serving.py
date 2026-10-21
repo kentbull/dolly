@@ -233,7 +233,21 @@ class Context(doing.DoDoer):
         return 0 <= age <= self.maximumAge
 
     def observe(self, regid, response):
-        """Retain a configured observer report only after locally verifying its head."""
+        """Retain one fresh configured-observer report only after local proof validation.
+
+        Args:
+            regid (str): Registry whose advertised head must independently verify.
+            response (dict): HTTP status, headers, and exact public KEL/TEL body returned
+            by the context's configured observer request.
+
+        Returns:
+            bool: True after persisting this source's observation marker; False for
+            unsuccessful/stale/malformed metadata, pending/rejected evidence, or a head
+            mismatch. A successful HTTP response alone supplies no observation authority.
+
+        The evidence owner may retain authenticated KEL/TEL while a response fails the
+        observation policy. Store/unexpected decoding errors propagate; no credential
+        view or wallet admission is created by this freshness operation."""
         headers = response.get('headers', {})
         if (response['status'] != 200 or headers.get('observer-evidence-state') != 'fresh'
                 or headers.get('content-type', '').split(';')[0] != CESR_CONTENT_TYPE):
@@ -408,7 +422,19 @@ class Context(doing.DoDoer):
         raise MissingChainError('legacy issuance is authentic; current TEL observation is not established')
 
     def _queryLegacy(self, credential):
-        """Use conventional legacy TEL replay and TSN queries to configured sources."""
+        """Queue conventional v1 TEL/TSN requests for a credential's configured sources.
+
+        Args:
+            credential (SerderACDC): Retained legacy credential fixing issuer, registry,
+            and credential SAIDs for both queries.
+
+        Returns:
+            None. With no sources or a recent outstanding request, performs no new work;
+            otherwise persists a request timestamp and queues tels and tsn acquisition.
+
+        Queued queries establish no standing, observation, or hook delivery. Actual
+        source replies must pass the ordinary legacy processors and response freshness
+        policy. Storage/time parsing errors propagate rather than producing a marker."""
         if not self.legacySources:
             return
         previous = self.db.legacyQueries.get((credential.said,))
@@ -591,7 +617,13 @@ class Context(doing.DoDoer):
 class IntakeEnd:
     """Expose framed CESR intake with explicit HTTP acknowledgement semantics."""
     def __init__(self, ctx):
-        """Bind the Dolly context that owns evidence verification and submissions."""
+        """Bind HTTP intake to one caller-owned Dolly context.
+
+        Args:
+            ctx (Context): Shared verifier, exact retained views, and submission tracker.
+
+        Returns:
+            None. Opens no stores/parsers/sockets and starts no scheduling lifecycle."""
         self.ctx = ctx
 
     @staticmethod
@@ -644,7 +676,15 @@ class IntakeEnd:
 class HealthEnd:
     """Expose process readiness independently of any credential decision."""
     def on_get(self, req, rep):
-        """Return application readiness in the Falcon response; no proof is evaluated."""
+        """Answer HTTP readiness without evaluating evidence or disclosing private state.
+
+        Args:
+            req (falcon.Request): Incoming health request, unused by this endpoint.
+            rep (falcon.Response): Response receiving application/status JSON.
+
+        Returns:
+            None. A ready response is an application liveness fact, not proof of issuer,
+            observer freshness, credential acceptance, or completed webhook delivery."""
         rep.media = {'application': 'dolly', 'status': 'ready'}
 
 
@@ -652,12 +692,32 @@ class StreamParser(Parser):
     """Keep incremental CESR framing in core and add Dolly's dispatch boundary."""
 
     def __init__(self, *, context, **kwa):
-        """Bind one connection's parser to the shared application processors."""
+        """Bind connection-local parsing state to the shared application dispatcher.
+
+        Args:
+            context (Context): Caller-owned shared processors and submission state.
+            **kwa: Core Parser options, including input buffer and framing/version owners.
+
+        Returns:
+            None. Retains context and delegates core parser construction. It opens no
+            independent database and supplies no authentication-policy override."""
         self.context = context
         super().__init__(**kwa)
 
     def msgProcess(self, exts, **kwa):
-        """Dispatch one complete core-parsed frame; no version/authentication override."""
+        """Dispatch one complete parsed frame through the application's shared owners.
+
+        Args:
+            exts (dict): Core-parsed message and attachment fields for exactly one frame.
+            **kwa: Parser processor keywords accepted for compatibility; dispatch chooses
+            the concrete shared context owners rather than trusting alternate handlers.
+
+        Returns:
+            str | None: Submitted Grant SAID, or None for non-Grant input, as returned by
+            Context.dispatch. This result alone does not establish semantic acceptance.
+
+        Core validation errors propagate to ordinary parser handling; retryable evidence
+        stays in existing dependency escrows. No input extraction or yielding occurs here."""
         return self.context.dispatch(self, exts)
 
 
@@ -669,7 +729,17 @@ class TcpIntake(doing.Doer):
     """
 
     def __init__(self, context, server, **kwa):
-        """Bind a Dolly context and separately scheduled hio ServerDoer server."""
+        """Compose connection-local incremental parsing over a separately owned TCP server.
+
+        Args:
+            context (Context): Shared authenticated evidence and application processors.
+            server (hio.tcp.Server): Listener/remoter owner scheduled by its ServerDoer.
+            **kwa: HIO Doer scheduling options.
+
+        Returns:
+            None. Starts with no parser sessions; recur creates one per accepted remoter.
+            This doer owns those generators and removes connection I/O, while ServerDoer
+            retains listener lifecycle ownership. Construction authenticates no messages."""
         self.context, self.server = context, server
         self.sessions = {}
         super().__init__(**kwa)
@@ -703,7 +773,17 @@ class TcpIntake(doing.Doer):
         return False
 
     def _close(self, address):
-        """Close one connection's suspended parser and its socket, if present."""
+        """Remove one remoter's suspended parsing generator and connection socket.
+
+        Args:
+            address: Connection key in this intake's sessions and server.ixes mappings.
+
+        Returns:
+            None. Missing generator/socket entries are harmless; present parser cleanup
+            and server.removeIx failures propagate through the owning lifecycle.
+
+        Cancel parsing before removing its connection so one malformed/disconnected
+        stream cannot retain state or interfere with another remoter's evidence."""
         if (session := self.sessions.pop(address, None)) is not None:
             session.close()
         if address in self.server.ixes:

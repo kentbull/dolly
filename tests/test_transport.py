@@ -27,7 +27,15 @@ from keri.core import Diger, Number, messagize
 
 
 def signed(credential, hab):
-    """Build an actual issuer signature factor without protocol-test imports."""
+    """Attach real current-establishment issuer signatures to exact credential bytes.
+
+    Args:
+        credential (SerderACDC): Disclosed node view to authenticate.
+        hab (Hab): Issuer habitat with the matching current signing keys.
+
+    Returns:
+        bytearray: Native node stream with its transferable signature group, using
+        production messagize and no imports from KERIpy protocol test fixtures."""
     return messagize(credential, tsgs=[(hab.kever.prefixer,
         Number(sn=hab.kever.lastEst.s), Diger(qb64=hab.kever.lastEst.d),
         hab.sign(credential.raw))], framed=False, gvrsn=Vrsn_2_0)
@@ -49,7 +57,15 @@ def test_tcp_fragmented_consecutive_and_malformed_connections_are_isolated():
         """Record real HTTP delivery from the raw TCP presentations."""
 
         def on_post(self, req, rep):
-            """Capture only the projected payload and acknowledge delivery."""
+            """Record one actual projected webhook and acknowledge its receipt.
+
+            Args:
+                req (falcon.Request): Incoming hook request carrying the public projection.
+                rep (falcon.Response): JSON acknowledgement response.
+
+            Returns:
+                None. Appends req.media to the test recorder; it creates no protocol state
+                and is reached only after the application decides to emit the hook."""
             received.append(req.media)
             rep.media = {'received': True}
 
@@ -80,7 +96,19 @@ def test_tcp_fragmented_consecutive_and_malformed_connections_are_isolated():
             clients[2].tx(b'not-a-CESR-frame')
 
             def finish(tymth, tock=0.01, **kwa):
-                """Complete the fragmented client only after the other grants deliver."""
+                """Release the final fragmented bytes only after independent clients complete.
+
+                Args:
+                    tymth (Callable): HIO injected clock used for deterministic transfer stages.
+                    tock (float): Cooperative scheduling delay.
+                    **kwa: Additional scheduler metadata, unused by this test driver.
+
+                Yields:
+                    float: Delay between checks and the final-fragment transmission.
+
+                Returns:
+                    None. Assertions require other grants to deliver before the partial frame
+                    creates any submission, then require all grants after its missing bytes arrive."""
                 yield tock
                 while tymth() < 1.2:
                     yield tock
@@ -135,7 +163,14 @@ def test_installed_wheel_dual_listener_start_stop_restart_and_local_inspect(tmp_
             self.wfile.write(b'{}')
 
         def log_message(self, format, *args):
-            """Keep routine test HTTP access logs out of subprocess diagnostics."""
+            """Suppress routine fixture HTTP logs without concealing capture failures.
+
+            Args:
+                format (str): BaseHTTPRequestHandler log format, unused.
+                *args: Formatting values, unused.
+
+            Returns:
+                None. Public hook data is checked through the explicit test capture file."""
             pass
 
     hook = ThreadingHTTPServer(('127.0.0.1', 0), Hook)
@@ -166,7 +201,17 @@ def test_installed_wheel_dual_listener_start_stop_restart_and_local_inspect(tmp_
         process = None
 
         def waitFor(predicate):
-            """Wait a bounded interval for real process/transport state to settle."""
+            """Await a real installed-process condition with a five-second wall-clock bound.
+
+            Args:
+                predicate (Callable[[], bool]): Observable transport/accepted/delivered state.
+
+            Returns:
+                None once predicate is true.
+
+            Raises:
+                AssertionError: The owned process exits early or the bounded wait expires.
+                The enclosing test finally block owns service/listener termination."""
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
                 if predicate():
@@ -185,7 +230,18 @@ def test_installed_wheel_dual_listener_start_stop_restart_and_local_inspect(tmp_
                 return False
 
         def inspect(said):
-            """Query persisted state through the authenticated read-only executable."""
+            """Read persisted submission state through the installed read-only Dolly CLI.
+
+            Args:
+                said (str): Grant identifier passed to the authenticated inspect command.
+
+            Returns:
+                dict: Parsed JSON from an actual successful subprocess invocation.
+
+            Raises:
+                AssertionError: The CLI reports failure.
+                TimeoutExpired, JSONDecodeError: Five-second process or output handling fails.
+                This helper inspects persisted evidence without a hidden Python store mutation."""
             result = subprocess.run([executable, 'inspect', *auth, '--grant', said],
                 cwd=tmp_path, capture_output=True, text=True, timeout=5)
             assert result.returncode == 0, result.stdout + result.stderr

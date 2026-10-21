@@ -121,7 +121,18 @@ def main(argv=None):
     """
     args = buildParser().parse_args(argv)
     def stop(signum, frame):
-        """Translate process termination into the scheduler's normal cancellation."""
+        """Translate a process signal into the scheduler's normal cancellation path.
+
+        Args:
+            signum (int): Delivered signal number, unused by this shared stop action.
+            frame: Interrupted Python frame supplied by signal handling, unused.
+
+        Returns:
+            Never returns normally.
+
+        Raises:
+            KeyboardInterrupt: Unwinds the main scheduler so owned children/stores close
+            through its established finally blocks instead of bypassing lifecycle cleanup."""
         raise KeyboardInterrupt
     previous = signal.signal(signal.SIGTERM, stop)
     try:
