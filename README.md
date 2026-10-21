@@ -80,3 +80,6 @@ HTTP/TCP listeners and real hooks, with three witnesses and quorum two.
 The qualification scripts do not call KERIpy's qualification wrapper, avoiding a
 cross-repository invocation cycle. See [provenance](docs/provenance.md) for exact
 module and symbol ancestry.
+
+The [clean qualification report](docs/qualification-2026-10-21.md) records the
+exact tested source pair, standalone/peer results, and public v1 operator evidence.

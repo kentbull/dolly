@@ -246,3 +246,13 @@ The workflow asserts local admit creation and verification, not independently
 observed remote admission acknowledgement. Successful hook assertions exercise
 actual source TSN acceptance through Dolly's normal core processors. This is
 one bounded v1 story, not universal protocol conformance or readiness.
+
+## Final dependency and qualification record
+
+Commit `8da5d71` changes only the KERIpy dependency pin from the earlier value to
+`64e14e086f16a4fd02eb9fc02ce07a2236175ca7`. The source/operator snapshot remains
+`b9aa9d4`; no runtime symbol changed in this metadata follow-up. The
+[clean qualification report](qualification-2026-10-21.md) records actual clean
+execution and the provenance of the later report, README link, and copied public
+result/transcript/proof artifacts. Those are locally compiled execution evidence,
+not an additional upstream code or idea attribution claim.

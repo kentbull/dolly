@@ -1,0 +1,46 @@
+kli init --version 1.0 --name dolly-legacy-v1.MswOSyVp-witness1 --base legacy-dolly-legacy-v1.MswOSyVp
+kli incept -a witness1 --version 1.0 --file /tmp/dolly-legacy-v1.MswOSyVp/witness.json --name dolly-legacy-v1.MswOSyVp-witness1 --base legacy-dolly-legacy-v1.MswOSyVp
+kli location add -a witness1 --version 1.0 --url http://127.0.0.1:45609/ --name dolly-legacy-v1.MswOSyVp-witness1 --base legacy-dolly-legacy-v1.MswOSyVp
+kli ends add -a witness1 --version 1.0 --role controller --eid BEYf-OM5eeHkWsiTU1j-wDVwUZc5IBJno2lS2kzaDW34 --name dolly-legacy-v1.MswOSyVp-witness1 --base legacy-dolly-legacy-v1.MswOSyVp
+kli kel export -a witness1 --version 1.0 --ends --output /tmp/dolly-legacy-v1.MswOSyVp/witness1.cesr --name dolly-legacy-v1.MswOSyVp-witness1 --base legacy-dolly-legacy-v1.MswOSyVp
+kli init --version 1.0 --name dolly-legacy-v1.MswOSyVp-witness2 --base legacy-dolly-legacy-v1.MswOSyVp
+kli incept -a witness2 --version 1.0 --file /tmp/dolly-legacy-v1.MswOSyVp/witness.json --name dolly-legacy-v1.MswOSyVp-witness2 --base legacy-dolly-legacy-v1.MswOSyVp
+kli location add -a witness2 --version 1.0 --url http://127.0.0.1:60117/ --name dolly-legacy-v1.MswOSyVp-witness2 --base legacy-dolly-legacy-v1.MswOSyVp
+kli ends add -a witness2 --version 1.0 --role controller --eid BIIba8otXFz-9laFVzX2p8xq3mliEiB6AcY0qr60o8yy --name dolly-legacy-v1.MswOSyVp-witness2 --base legacy-dolly-legacy-v1.MswOSyVp
+kli kel export -a witness2 --version 1.0 --ends --output /tmp/dolly-legacy-v1.MswOSyVp/witness2.cesr --name dolly-legacy-v1.MswOSyVp-witness2 --base legacy-dolly-legacy-v1.MswOSyVp
+kli init --version 1.0 --name dolly-legacy-v1.MswOSyVp-witness3 --base legacy-dolly-legacy-v1.MswOSyVp
+kli incept -a witness3 --version 1.0 --file /tmp/dolly-legacy-v1.MswOSyVp/witness.json --name dolly-legacy-v1.MswOSyVp-witness3 --base legacy-dolly-legacy-v1.MswOSyVp
+kli location add -a witness3 --version 1.0 --url http://127.0.0.1:36693/ --name dolly-legacy-v1.MswOSyVp-witness3 --base legacy-dolly-legacy-v1.MswOSyVp
+kli ends add -a witness3 --version 1.0 --role controller --eid BCq8k1yLKFSsu72_5CuGT5iHv9bBIdzsitaXMG35K2JJ --name dolly-legacy-v1.MswOSyVp-witness3 --base legacy-dolly-legacy-v1.MswOSyVp
+kli kel export -a witness3 --version 1.0 --ends --output /tmp/dolly-legacy-v1.MswOSyVp/witness3.cesr --name dolly-legacy-v1.MswOSyVp-witness3 --base legacy-dolly-legacy-v1.MswOSyVp
+kli init --version 1.0 --name dolly-legacy-v1.MswOSyVp-issuer --base legacy-dolly-legacy-v1.MswOSyVp
+kli kel import --version 1.0 --file /tmp/dolly-legacy-v1.MswOSyVp/witnesses.cesr --name dolly-legacy-v1.MswOSyVp-issuer --base legacy-dolly-legacy-v1.MswOSyVp
+kli incept -a issuer --version 1.0 --file /tmp/dolly-legacy-v1.MswOSyVp/plain.json --receipt-endpoint --wits BEYf-OM5eeHkWsiTU1j-wDVwUZc5IBJno2lS2kzaDW34 --wits BIIba8otXFz-9laFVzX2p8xq3mliEiB6AcY0qr60o8yy --wits BCq8k1yLKFSsu72_5CuGT5iHv9bBIdzsitaXMG35K2JJ --toad 2 --name dolly-legacy-v1.MswOSyVp-issuer --base legacy-dolly-legacy-v1.MswOSyVp
+kli kel export -a issuer --version 1.0 --output /tmp/dolly-legacy-v1.MswOSyVp/issuer-initial.cesr --name dolly-legacy-v1.MswOSyVp-issuer --base legacy-dolly-legacy-v1.MswOSyVp
+kli init --version 1.0 --name dolly-legacy-v1.MswOSyVp-dolly --base legacy-dolly-legacy-v1.MswOSyVp
+kli kel import --version 1.0 --file /tmp/dolly-legacy-v1.MswOSyVp/witnesses.cesr --name dolly-legacy-v1.MswOSyVp-dolly --base legacy-dolly-legacy-v1.MswOSyVp
+kli incept -a dolly --version 1.0 --file /tmp/dolly-legacy-v1.MswOSyVp/plain.json --receipt-endpoint --wits BEYf-OM5eeHkWsiTU1j-wDVwUZc5IBJno2lS2kzaDW34 --wits BIIba8otXFz-9laFVzX2p8xq3mliEiB6AcY0qr60o8yy --wits BCq8k1yLKFSsu72_5CuGT5iHv9bBIdzsitaXMG35K2JJ --toad 2 --name dolly-legacy-v1.MswOSyVp-dolly --base legacy-dolly-legacy-v1.MswOSyVp
+kli kel export -a dolly --version 1.0 --output /tmp/dolly-legacy-v1.MswOSyVp/dolly-initial.cesr --name dolly-legacy-v1.MswOSyVp-dolly --base legacy-dolly-legacy-v1.MswOSyVp
+kli kel import --version 1.0 --file /tmp/dolly-legacy-v1.MswOSyVp/dolly-initial.cesr --name dolly-legacy-v1.MswOSyVp-issuer --base legacy-dolly-legacy-v1.MswOSyVp
+kli kel import --version 1.0 --file /tmp/dolly-legacy-v1.MswOSyVp/issuer-initial.cesr --name dolly-legacy-v1.MswOSyVp-dolly --base legacy-dolly-legacy-v1.MswOSyVp
+kli vc schema import_ --schema /dolly/src/dolly/schemas/legacy-status-v1.json --name dolly-legacy-v1.MswOSyVp-issuer --base legacy-dolly-legacy-v1.MswOSyVp
+kli vc registry incept -a issuer -r legacy --name dolly-legacy-v1.MswOSyVp-issuer --base legacy-dolly-legacy-v1.MswOSyVp
+kli vc create -a issuer -r legacy --schema EPloMw1exL2TGzQU4Fzd9CStAIIUpkLz32-WyQxTUChL --recipient EFZrRm4YrLv10cRyOLfGhl-zEgg2X9ZX7LwYF8S0fs9j --data \{\"status\":\"authorized\"\} --name dolly-legacy-v1.MswOSyVp-issuer --base legacy-dolly-legacy-v1.MswOSyVp
+kli vc list -a issuer --issued --said --name dolly-legacy-v1.MswOSyVp-issuer --base legacy-dolly-legacy-v1.MswOSyVp
+kli location add -a issuer --version 1.0 --url http://127.0.0.1:57439/ --name dolly-legacy-v1.MswOSyVp-issuer --base legacy-dolly-legacy-v1.MswOSyVp
+kli ends add -a issuer --version 1.0 --role controller --eid EKiNjs-Uz_WJW8PnKNNkfJE6td8SCBcjRxP3v-07EnBV --name dolly-legacy-v1.MswOSyVp-issuer --base legacy-dolly-legacy-v1.MswOSyVp
+kli kel export -a issuer --version 1.0 --ends --output /tmp/dolly-legacy-v1.MswOSyVp/issuer-endpoints.cesr --name dolly-legacy-v1.MswOSyVp-issuer --base legacy-dolly-legacy-v1.MswOSyVp
+kli kel import --version 1.0 --file /tmp/dolly-legacy-v1.MswOSyVp/issuer-endpoints.cesr --name dolly-legacy-v1.MswOSyVp-dolly --base legacy-dolly-legacy-v1.MswOSyVp
+kli kel export -a issuer --version 1.0 --output /tmp/dolly-legacy-v1.MswOSyVp/issuer-current.cesr --name dolly-legacy-v1.MswOSyVp-issuer --base legacy-dolly-legacy-v1.MswOSyVp
+kli ipex apply -a dolly -r EKiNjs-Uz_WJW8PnKNNkfJE6td8SCBcjRxP3v-07EnBV --schema EPloMw1exL2TGzQU4Fzd9CStAIIUpkLz32-WyQxTUChL --attributes \{\"status\":\"authorized\"\} --output /tmp/dolly-legacy-v1.MswOSyVp/apply-http.cesr --name dolly-legacy-v1.MswOSyVp-dolly --base legacy-dolly-legacy-v1.MswOSyVp
+kli ipex offer -a issuer -r EFZrRm4YrLv10cRyOLfGhl-zEgg2X9ZX7LwYF8S0fs9j -s EFm3HVG3ChTqOUx_ZcKCQIvO3_8ENVgcieSim7fSAqfi --prior EOCtsdt4OIX9-wyDf6xCgNUeNbcqpatpp_P9zTJVjfrc --input /tmp/dolly-legacy-v1.MswOSyVp/apply-http.cesr --output /tmp/dolly-legacy-v1.MswOSyVp/offer-http.cesr --name dolly-legacy-v1.MswOSyVp-issuer --base legacy-dolly-legacy-v1.MswOSyVp
+kli ipex agree -a dolly -s EO6SY6ZZQmtbTWRo7WzsfZaMYupxxnJoXJQ45xUf7EPv --input /tmp/dolly-legacy-v1.MswOSyVp/offer-http.cesr --output /tmp/dolly-legacy-v1.MswOSyVp/agree-http.cesr --name dolly-legacy-v1.MswOSyVp-dolly --base legacy-dolly-legacy-v1.MswOSyVp
+kli ipex grant -a issuer -r EFZrRm4YrLv10cRyOLfGhl-zEgg2X9ZX7LwYF8S0fs9j -s EFm3HVG3ChTqOUx_ZcKCQIvO3_8ENVgcieSim7fSAqfi --prior EEwd0PwnKibmSYwTcwfLy2qXcamAkMvz6vlHjWjeHx66 --input /tmp/dolly-legacy-v1.MswOSyVp/agree-http.cesr --endpoint http://127.0.0.1:49079/ingest --output /tmp/dolly-legacy-v1.MswOSyVp/grant-http.cesr --name dolly-legacy-v1.MswOSyVp-issuer --base legacy-dolly-legacy-v1.MswOSyVp
+kli ipex admit -a dolly -s EAIbsjPcyxHaqbOqvLexjXtPtM_yLVCcNLmm6zZq2QlP --output /tmp/dolly-legacy-v1.MswOSyVp/admit-http.cesr --name dolly-legacy-v1.MswOSyVp-dolly --base legacy-dolly-legacy-v1.MswOSyVp
+kli ipex apply -a dolly -r EKiNjs-Uz_WJW8PnKNNkfJE6td8SCBcjRxP3v-07EnBV --schema EPloMw1exL2TGzQU4Fzd9CStAIIUpkLz32-WyQxTUChL --output /tmp/dolly-legacy-v1.MswOSyVp/apply-tcp.cesr --name dolly-legacy-v1.MswOSyVp-dolly --base legacy-dolly-legacy-v1.MswOSyVp
+kli ipex offer -a issuer -r EFZrRm4YrLv10cRyOLfGhl-zEgg2X9ZX7LwYF8S0fs9j -s EFm3HVG3ChTqOUx_ZcKCQIvO3_8ENVgcieSim7fSAqfi --prior ELJedJ7EbgMtX76AYjC2k1G1MDVHtoID1_QSHQYunoAw --input /tmp/dolly-legacy-v1.MswOSyVp/admit-and-apply.cesr --output /tmp/dolly-legacy-v1.MswOSyVp/offer-tcp.cesr --name dolly-legacy-v1.MswOSyVp-issuer --base legacy-dolly-legacy-v1.MswOSyVp
+kli ipex agree -a dolly -s EBLePL_x-JJ-Z9bIRdirqVaxf-8vN0ggcypB5IVGu7Hp --input /tmp/dolly-legacy-v1.MswOSyVp/offer-tcp.cesr --output /tmp/dolly-legacy-v1.MswOSyVp/agree-tcp.cesr --name dolly-legacy-v1.MswOSyVp-dolly --base legacy-dolly-legacy-v1.MswOSyVp
+kli ipex grant -a issuer -r EFZrRm4YrLv10cRyOLfGhl-zEgg2X9ZX7LwYF8S0fs9j -s EFm3HVG3ChTqOUx_ZcKCQIvO3_8ENVgcieSim7fSAqfi --prior EC6gm9HknIbhBaoR0q2rAxjn_gYrVmu3YeuRk9GXMefM --input /tmp/dolly-legacy-v1.MswOSyVp/agree-tcp.cesr --endpoint tcp://127.0.0.1:58781 --output /tmp/dolly-legacy-v1.MswOSyVp/grant-tcp.cesr --name dolly-legacy-v1.MswOSyVp-issuer --base legacy-dolly-legacy-v1.MswOSyVp
+kli ipex admit -a dolly -s EB0vEG8XCmAawlw2pyhyH-KG1sFvc_6tYCOJaIcCVlsw --output /tmp/dolly-legacy-v1.MswOSyVp/admit-tcp.cesr --name dolly-legacy-v1.MswOSyVp-dolly --base legacy-dolly-legacy-v1.MswOSyVp
+kli vc revoke -a issuer -r legacy --said EFm3HVG3ChTqOUx_ZcKCQIvO3_8ENVgcieSim7fSAqfi --name dolly-legacy-v1.MswOSyVp-issuer --base legacy-dolly-legacy-v1.MswOSyVp
+kli ipex grant -a issuer -r EFZrRm4YrLv10cRyOLfGhl-zEgg2X9ZX7LwYF8S0fs9j -s EFm3HVG3ChTqOUx_ZcKCQIvO3_8ENVgcieSim7fSAqfi --input /tmp/dolly-legacy-v1.MswOSyVp/admit-tcp.cesr --endpoint http://127.0.0.1:49079/ingest --output /tmp/dolly-legacy-v1.MswOSyVp/grant-revoked.cesr --name dolly-legacy-v1.MswOSyVp-issuer --base legacy-dolly-legacy-v1.MswOSyVp
