@@ -73,6 +73,10 @@ checkouts. Exact source state and artifact hashes are reported during the build.
 DOLLY_MATRIX_IMAGE=dolly-v2-refactor:dev scripts/legacy-peers/check.sh
 ```
 
+The [v1 operator walkthrough](scripts/operator/README.md) runs installed KLI
+issuance, apply/offer/agree/grant/admit and revocation against independent Dolly
+HTTP/TCP listeners and real hooks, with three witnesses and quorum two.
+
 The qualification scripts do not call KERIpy's qualification wrapper, avoiding a
 cross-repository invocation cycle. See [provenance](docs/provenance.md) for exact
 module and symbol ancestry.

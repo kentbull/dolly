@@ -207,3 +207,42 @@ retained disclosure, current-standing, or scheduler invariants. That coverage do
 not certify protocol correctness; executable qualification is recorded separately.
 
 Inventory: 149 explicit Python symbols.
+
+
+## Installed v1 operator artifacts
+
+The `scripts/operator/` workflow is a new local Bash orchestration under Kent's
+request for visible installed-CLI issuance, negotiation, admission, reporting
+and revocation. It is not copied from a Python lifecycle test. No exact donor
+is asserted for `legacy-v1.sh`, `run-legacy-v1.sh`, `Dockerfile`,
+`json_helpers.py` or its README. The runner's copied-wheel/named-volume build
+pattern follows this repository's `scripts/check.sh` and KERIpy's scenario
+runner; its operation sequence is newly composed from existing KLI commands.
+
+The script sources the infrastructure functions and standard-library HTTP/JSON
+helper from KERIpy commit
+[`63453fe3b7bf39f4cbfc5e618bd9e0c4b09b6d4e`](https://github.com/kentbull/keripy/tree/63453fe3b7bf39f4cbfc5e618bd9e0c4b09b6d4e/scripts/v2-e2e/scenarios).
+It uses `value`, `assert_json`, `cleanup`, `k`, `spawn`, `stop`, `poll` and
+`delivered`, plus helper port/readiness/hook operations. It does not invoke
+`prepare`, `services` or other credential lifecycle setup. Those imported
+functions keep their KERIpy definitions and documentation; no copied Python
+protocol implementation is added to Dolly.
+
+The separate generic evidence source is KERIpy's `legacy_evidence.Source` and
+`vc.registry.serve`, composed from the normal Parser, Tevery, Hab.reply and
+accepted TEL replay writer. It is invoked as an installed operator command;
+Dolly owns only the reporting policy and hooks. The v1 script relies on the
+established-version witness adapter (`f42647d194545a20d97a4386d3fcd868f72a9479`),
+legacy author adapters (`b0d30d05c0c1f4df330cd63f477820d93441f641`), and
+reviewed direct IPEX command paths. These references explain dependencies,
+not original idea authorship; each run records its actual source revisions,
+dirty flags, installed versions and wheel hashes independently.
+
+`json_helpers.py` has no function/class symbols. Its module contract documents
+all three argument forms, emitted artifacts and failure behavior. Both Bash
+entry points document build/state/error/cleanup responsibilities in their
+companion README; lifecycle comments identify protocol evidence boundaries.
+The workflow asserts local admit creation and verification, not independently
+observed remote admission acknowledgement. Successful hook assertions exercise
+actual source TSN acceptance through Dolly's normal core processors. This is
+one bounded v1 story, not universal protocol conformance or readiness.
