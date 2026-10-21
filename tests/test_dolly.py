@@ -27,6 +27,7 @@ from keri.help import helping
 
 
 def native(*events):
+    """Frame native public evidence with an explicit empty attachment group."""
     empty = Counter(Codens.AttachmentGroup, count=0, version=Vrsn_2_0).qb64b
     return b''.join(event.raw + empty for event in events)
 
@@ -318,6 +319,10 @@ def test_dolly_independent_schema_http_arrival_preserves_disclosure(tmp_path, ar
 
 
 def test_reopened_dolly_requires_active_observer_observation(tmp_path):
+    """Keep authentic retained history while requiring the currently configured observer.
+
+    Reopen the actual application/registry stores, change observer policy, and
+    require a new eligible observation before current reporting is fresh."""
     from falcon import testing
     from keri.acdc.regbasing import RegBaser
     from dolly.serving import DollyBaser
@@ -346,6 +351,7 @@ def test_reopened_dolly_requires_active_observer_observation(tmp_path):
                       headers={key.lower(): value for key, value in response.headers.items()})
 
         def context(url):
+            """Build the same persistent evidence/submission stores under the selected observer URL."""
             evidence = Registrar(verifier, reger=RegBaser(name='dolly-source',
                 headDirPath=str(tmp_path), temp=False))
             return Dolly(verifier, dhab, issuers=[ihab.pre], schemas=[credential.schema['$id']],
@@ -416,13 +422,17 @@ def test_native_partial_full_grants_observer_acquisition_and_real_webhooks(bindi
         received, observerRequests = [], []
 
         class Requests:
+            """Count actual observer HTTP requests to detect unauthenticated fetches."""
             def process_request(self, req, rep):
+                """Record the requested path without replacing protocol or authorization handling."""
                 observerRequests.append(req.path)
 
         obs.app.add_middleware(Requests())
 
         class Hook:
+            """Receive actual application HTTP hooks for exact payload assertions."""
             def on_post(self, req, rep):
+                """Record the projected JSON body and acknowledge actual webhook delivery."""
                 received.append(req.media)
                 rep.media = {'received': True}
 
@@ -586,12 +596,16 @@ def test_legacy_current_source_tsn_and_same_real_webhook_contract(attachmentHead
         dolly = None
 
         class Hook:
+            """Receive actual application HTTP hooks for exact payload assertions."""
             def on_post(self, req, rep):
+                """Record the projected JSON body and acknowledge actual webhook delivery."""
                 received.append(req.media)
                 rep.media = {'received': True}
 
         class Source:
+            """Process legacy queries through actual KERIpy KEL/TEL processors."""
             def on_post(self, req, rep):
+                """Parse and dispatch the actual legacy query, retaining replay/TSN cues for the source."""
                 event = SerderKERI(sad=json.loads(req.bounded_stream.read()))
                 stream = event.raw + req.get_header(CESR_ATTACHMENT_HEADER).encode()
                 psr = Parser(kvy=issuer.kvy, tvy=tvy, version=Vrsn_1_0)
@@ -643,6 +657,10 @@ def test_legacy_current_source_tsn_and_same_real_webhook_contract(attachmentHead
             replyClient = http.clienting.Client(hostname='127.0.0.1', port=ingress.servant.ha[1])
 
             def replies(tymth=None, tock=0.01, **kwa):
+                """Serve real source replay/TSN cues only after the test enables fresh replies.
+
+                Reply HTTP responses remain observable; queued issuance history alone
+                cannot establish the verifier's current-standing policy."""
                 yield tock
                 while True:
                     if allowReplies[0]:
@@ -725,6 +743,7 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
         presentationReg = hrar.makeRegistry(name='presentation', prefix=hhab.pre)
 
         def anchor(hab, registry, event):
+            """Anchor the exact registry event in its controlling KEL and return that key event."""
             hab.interact(data=[dict(i=registry.regk, s=event.sad['n'], d=event.said)])
             assert registry.anchorMsg(event.said)
             return hab.kever.serder
@@ -760,7 +779,9 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
         received = []
 
         class Hook:
+            """Receive actual application HTTP hooks for exact payload assertions."""
             def on_post(self, req, rep):
+                """Record the projected JSON body and acknowledge actual webhook delivery."""
                 received.append(req.media)
                 rep.media = {'received': True}
 
@@ -794,6 +815,7 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
             doers = [http.ServerDoer(server=server) for server in servers] + [puller, dolly]
 
             def send(url, raw, duration=0.25):
+                """Transmit one CESR body to the actual HTTP listener and require intake acknowledgement."""
                 from urllib.parse import urlsplit
                 target = urlsplit(url)
                 client = http.clienting.Client(hostname=target.hostname, port=target.port)

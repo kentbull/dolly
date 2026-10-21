@@ -9,7 +9,7 @@ import socket
 import subprocess
 import threading
 import time
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
@@ -202,11 +202,21 @@ def test_installed_wheel_dual_listener_start_stop_restart_and_local_inspect(tmp_
                                            stderr=subprocess.PIPE, text=True)
                 waitFor(ready)
                 if phase == 0:
+                    # There is no retained core request when the outer sender's
+                    # KEL is absent: refuse, expose no fake pending submission,
+                    # and allow an explicit retry after real bootstrap succeeds.
+                    request = Request(f'http://127.0.0.1:{httpPort}/ingest',
+                        data=grants[1][0].raw + grants[1][1], headers={'Content-Type': 'application/cesr'})
+                    with pytest.raises(HTTPError) as refused:
+                        urlopen(request, timeout=2)
+                    assert refused.value.code == 400
+                    assert inspect(grants[1][0].said)['state'] == 'unknown'
                     with socket.create_connection(('127.0.0.1', tcpPort)) as connection:
                         wire = issuer.replay(gvrsn=Vrsn_2_0) + grants[0][0].raw + grants[0][1]
                         connection.sendall(wire[:23])
                         time.sleep(0.05)
                         connection.sendall(wire[23:])
+                    waitFor(lambda: len(received) == 1)
                     request = Request(f'http://127.0.0.1:{httpPort}/ingest',
                         data=grants[1][0].raw + grants[1][1], headers={'Content-Type': 'application/cesr'})
                     with urlopen(request, timeout=2) as response:

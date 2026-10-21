@@ -25,13 +25,17 @@ from keri.db import dbing, koming
 from keri.db.basing import BaserDoer
 from keri.help import helping
 from keri.kering import (ValidationError, ExtractionError, ShortageError, MissingChainError, MissingSchemaError,
-                         MissingRegistryError, MissingAnchorError)
+                         MissingRegistryError, MissingAnchorError, MissingSenderKeyStateError)
 from keri.peer import exchanging
 from keri.vdr import verifying, eventing as legacyEventing
 
 
 @dataclass
 class Submission:
+    """Persist one grant reporting decision and its exact projected payload.
+
+    Pending records retry dependencies; terminal decisions survive reopen.
+    delivered records webhook acknowledgement, not protocol acceptance."""
     grant: str
     registries: list = field(default_factory=list)
     state: str = 'pending'
@@ -42,6 +46,10 @@ class Submission:
 
 @dataclass
 class Observation:
+    """Retain a locally verified registry head and configured observer observation.
+
+    observed is that report's time; head identifies accepted evidence. The
+    record does not establish global latest state or publication time."""
     observed: str
     head: str
     observer: str
@@ -49,6 +57,10 @@ class Observation:
 
 @dataclass
 class LegacyQuery:
+    """Track one conventional TEL/TSN acquisition attempt for a legacy credential.
+
+    started gates fresh replies from configured sources; reply avoids consuming
+    the same source report twice. This is application observation policy."""
     credential: str
     registry: str
     issuer: str
@@ -57,10 +69,17 @@ class LegacyQuery:
 
 
 class DollyBaser(dbing.LMDBer):
+    """Own durable submissions, observer reports, and legacy query bookkeeping.
+
+    Core KEL/TEL/EXN evidence stays in its existing KERIpy stores."""
     TailDirPath = 'keri/dolly'
     AltTailDirPath = '.keri/dolly'
 
     def reopen(self, **kwa):
+        """Open application tables and return whether the LMDB environment opened.
+
+        Keyword arguments follow LMDBer, including explicit readonly inspection.
+        Existing state is retained; reopen does not reissue reporting decisions."""
         super().reopen(**kwa)
         self.submissions = koming.Komer(db=self, subkey='submissions.', klas=Submission)
         self.observed = koming.Komer(db=self, subkey='observed.', klas=Observation)
@@ -69,12 +88,20 @@ class DollyBaser(dbing.LMDBer):
 
 
 class Notices:
+    """Adapt the core notifier contract while durable EXNs drive application work."""
     def add(self, attrs):
         # Durable EXN state, not notification delivery, drives application work.
+        """Ignore transient attrs notifications; Context reads durable verified EXNs.
+
+        No notification is an acceptance or delivery acknowledgement."""
         pass
 
 
 class Context(doing.DoDoer):
+    """Compose core verification with explicit reporting, projection, and delivery.
+
+    One section owner and enabled KRAM owner serve both direct transports.
+    Historical inspection is separate from current reporting policy."""
     def __init__(self, hby, hab, *, issuers, schemas, fields, required=(),
                  observer, webhook, maximumAge=15.0, timeout=5.0,
                  db=None, evidence=None, legacy=None, legacySources=(), graphPolicy=None,
@@ -168,7 +195,7 @@ class Context(doing.DoDoer):
         raises its core error; dependency failures remain pending. The core
         Parser method is called directly to avoid the TCP dispatch hook recursing.
         """
-        serder, submitted = exts['serder'], None
+        serder, submitted, submission = exts['serder'], None, None
         if serder.ilk in ('vcp', 'vrt', 'iss', 'bis', 'rev', 'brv'):
             if self.legacy.reger.tels.get(keys=serder.pre, on=serder.sn) == serder.said:
                 return None  # Exact already-verified legacy TEL replay.
@@ -178,16 +205,25 @@ class Context(doing.DoDoer):
                 raise ValidationError('grant is addressed to a different disclosee')
             registries = sorted({regid for item in exts.get('nests', [])
                                  if (regid := issuerRegistry(item['serder']))})
-            self.db.submissions.put((serder.said,), Submission(serder.said, registries))
+            submission = Submission(serder.said, registries)
             submitted = serder.said
         try:
             Parser.msgProcess(parser, exts, kvy=self.evidence.kvy, rgy=self.evidence.rever,
                 tvy=self.legacy.tvy, vry=self.legacy, exc=self.exc, rvy=self.rvy, scy=self.scy)
         except KEL_DEPENDENCIES + (MissingChainError, MissingSchemaError):
             pass  # Concrete processors already retained their dependencies.
+        # Missing bootstrap raises before KRAM retains this request. Do not
+        # manufacture a pending row that would survive a refused HTTP request.
+        if submission is not None:
+            self.db.submissions.put((submitted,), submission)
         return submitted
 
     def fresh(self, regid):
+        """Return whether regid has a matching fresh report from the current observer.
+
+        A different configured URL, missing/moved local head, future timestamp,
+        or report older than maximumAge fails freshness. No global latest-state
+        inference follows from this application observation."""
         record = self.db.observed.get((regid,))
         head = self.rgy.store.head(regid)
         if (record is None or record.observer != self.observer
@@ -329,6 +365,12 @@ class Context(doing.DoDoer):
                     raise MissingChainError('presentation registry observation is missing or stale')
 
     def _legacyCredential(self, exn):
+        """Return a core-verified legacy credential only with fresh source standing.
+
+        exn is a retained v1 grant. Embedded issuance proves history; configured
+        source-authenticated TEL state notification proves application freshness.
+        Missing evidence raises MissingChainError and starts normal TEL queries;
+        invalid proof or a non-issued current state raises ValidationError."""
         exchanging.verify(self.hby, exn)
         _, pathed = exchanging.cloneMessage(self.hby, exn.said)
         embeds = exn.sad.get('e', {})
@@ -346,7 +388,7 @@ class Context(doing.DoDoer):
                 continue
             try:
                 parser.parseOne(ims=bytearray(serder.raw) + pathed.get(label, b''))
-            except KEL_DEPENDENCIES + (MissingRegistryError, MissingAnchorError) as error:
+            except KEL_DEPENDENCIES + (MissingRegistryError, MissingAnchorError, MissingSenderKeyStateError) as error:
                 self._queryLegacy(credential)
                 raise MissingChainError(str(error)) from error
         self.legacy.tvy.processEscrows()
@@ -455,6 +497,12 @@ class Context(doing.DoDoer):
             self.db.submissions.pin(keys, record)
 
     def request(self, url, *, body=None, data=None):
+        """Send one bounded CESR-evidence or JSON-webhook POST and yield while waiting.
+
+        url selects the endpoint; body is raw CESR and data is a JSON payload.
+        Return the actual HTTP response, or None on timeout. The client/doer is
+        removed and closed even on cancellation; response status determines the
+        caller's observation or delivery decision."""
         target = urlsplit(url)
         client = http.clienting.Client(scheme=target.scheme, hostname=target.hostname,
             port=target.port or (443 if target.scheme == 'https' else 80))
@@ -474,6 +522,13 @@ class Context(doing.DoDoer):
             self.clients.discard(client)
 
     def workDo(self, tymth=None, tock=0.03125, **kwa):
+        """Run observer acquisition, pending verification, and accepted hook retries.
+
+        tymth/tock follow hio scheduling. Only authenticated retained grant
+        evidence authorizes registry fetch hints; only accepted undelivered
+        submissions enter webhook delivery. Acknowledged delivery is persisted.
+        Cancellation unwinds live request owners; no exactly-once guarantee is
+        made for a lost HTTP acknowledgement."""
         self.wind(tymth)
         yield tock
         while True:
@@ -534,6 +589,7 @@ class Context(doing.DoDoer):
 
 
 class IntakeEnd:
+    """Expose framed CESR intake with explicit HTTP acknowledgement semantics."""
     def __init__(self, ctx):
         """Bind the Dolly context that owns evidence verification and submissions."""
         self.ctx = ctx
@@ -578,7 +634,7 @@ class IntakeEnd:
             raw, version = self.decode(raw, req.get_header(CESR_ATTACHMENT_HEADER),
                                        req.get_header('CESR-Genus'))
             rep.media = self.ctx.ingest(raw, version=version)
-        except (ValidationError, ExtractionError, ValueError, TypeError) as error:
+        except (ValidationError, ExtractionError, MissingSenderKeyStateError, ValueError, TypeError) as error:
             raise falcon.HTTPBadRequest(description=str(error)) from error
         rep.status = falcon.HTTP_202
 
@@ -586,7 +642,9 @@ class IntakeEnd:
 
 
 class HealthEnd:
+    """Expose process readiness independently of any credential decision."""
     def on_get(self, req, rep):
+        """Return application readiness in the Falcon response; no proof is evaluated."""
         rep.media = {'application': 'dolly', 'status': 'ready'}
 
 
