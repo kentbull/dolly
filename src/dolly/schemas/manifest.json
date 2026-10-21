@@ -1,0 +1,16 @@
+{
+  "legacy-status-v1": {
+    "file": "legacy-status-v1.json",
+    "said": "EPloMw1exL2TGzQU4Fzd9CStAIIUpkLz32-WyQxTUChL",
+    "provenance": "Local test fixture; not an external ecosystem schema",
+    "source": "kentbull/keripy e999aa9c4a457b7c52e05e3bb3dd03f6e3c8f83c tests/app/test_dolly.py::test_legacy_current_source_tsn_and_same_real_webhook_contract",
+    "sourceAuthor": "Original author not established"
+  },
+  "entitlement-v2": {
+    "file": "entitlement-v2.json",
+    "said": "ECvpa-9mzR_3885DT1t433bbU03lroP2Wkxt6p4SzwFe",
+    "provenance": "Local test fixture; not an external ecosystem schema",
+    "source": "Locally designed during standalone Dolly extraction; non-vLEI entitlement contract",
+    "sourceAuthor": "Agent-generated fixture under Kent's extraction request"
+  }
+}

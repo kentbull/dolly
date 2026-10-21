@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools==84.0.0", "wheel==0.48.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dolly"
+version = "0.1.0.dev0"
+description = "Direct KERI credential reporting and historical evidence inspection"
+requires-python = ">=3.14,<3.15"
+license = "Apache-2.0"
+readme = "README.md"
+dependencies = ["keri @ git+https://github.com/kentbull/keripy.git@6aadd69beaf6fc7803f12e273b4ca101e6364e49"]
+
+[project.scripts]
+dolly = "dolly.cli:main"
+
+[project.optional-dependencies]
+test = ["pytest==9.1.1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"dolly.schemas" = ["*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

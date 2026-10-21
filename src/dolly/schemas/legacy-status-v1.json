@@ -1,0 +1,1 @@
+{"$id":"EPloMw1exL2TGzQU4Fzd9CStAIIUpkLz32-WyQxTUChL","$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"a":{"type":"object","properties":{"status":{"type":"string"}}}},"required":["a"]}

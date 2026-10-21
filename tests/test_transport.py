@@ -1,0 +1,238 @@
+"""Connection isolation, packaged schemas, and installed service lifecycle."""
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import importlib.util
+import json
+from pathlib import Path
+import shutil
+import signal
+import socket
+import subprocess
+import threading
+import time
+from urllib.error import URLError
+from urllib.request import Request, urlopen
+from uuid import uuid4
+
+import falcon
+from hio.base import doing
+from hio.core import http, tcp
+import pytest
+
+from dolly.schemas import load, manifest
+from dolly.serving import Context, TcpIntake
+from keri import Vrsn_2_0
+from keri.acdc import acdcmap, grant
+from keri.app.habbing import openHby
+from keri.core import Diger, Number, messagize
+
+
+def signed(credential, hab):
+    """Build an actual issuer signature factor without protocol-test imports."""
+    return messagize(credential, tsgs=[(hab.kever.prefixer,
+        Number(sn=hab.kever.lastEst.s), Diger(qb64=hab.kever.lastEst.d),
+        hab.sign(credential.raw))], framed=False, gvrsn=Vrsn_2_0)
+
+
+def test_packaged_schema_manifest_and_no_application_in_keripy():
+    """Verify installed fixture commitments and removal of the old core package."""
+    for name, entry in manifest().items():
+        assert load(name).said == entry['said']
+    assert importlib.util.find_spec('keri.app.dolly') is None
+    assert 'site-packages' in str(Path(__import__('dolly').__file__))
+
+
+def test_tcp_fragmented_consecutive_and_malformed_connections_are_isolated():
+    """A stalled/malformed connection cannot consume another client's evidence."""
+    received = []
+
+    class Hook:
+        """Record real HTTP delivery from the raw TCP presentations."""
+
+        def on_post(self, req, rep):
+            """Capture only the projected payload and acknowledge delivery."""
+            received.append(req.media)
+            rep.media = {'received': True}
+
+    app = falcon.App()
+    app.add_route('/hook', Hook())
+    hook = http.Server(servant=tcp.Server(ha=('127.0.0.1', 0)), app=app)
+    raw = tcp.Server(ha=('127.0.0.1', 0))
+    assert hook.reopen() and raw.reopen()
+    hook.servant.eha, raw.eha = hook.servant.ha, raw.ha
+    clients = [tcp.Client(ha=raw.ha) for _ in range(3)]
+    with (openHby(name='tcp-source', version=Vrsn_2_0) as source,
+          openHby(name='tcp-reader', version=Vrsn_2_0) as reader):
+        issuer, verifier = source.makeHab(name='issuer'), reader.makeHab(name='verifier')
+        schema = load('entitlement-v2')
+        credential = acdcmap(israid=issuer.pre, schema=schema.sed,
+                             attribute=dict(d='', entitlement='read'))
+        dolly = Context(reader, verifier, issuers=[issuer.pre], schemas=[schema.said],
+            fields={'entitlement': 'a/entitlement'}, required=['entitlement'],
+            observer='http://unused.test/', webhook=f'http://127.0.0.1:{hook.servant.ha[1]}/hook')
+        try:
+            grants = [grant(issuer, verifier.pre, f'connection {index}',
+                            origin=signed(credential, issuer)) for index in range(3)]
+            first = issuer.replay(gvrsn=Vrsn_2_0) + grants[0][0].raw + grants[0][1]
+            # Client 0 is stalled within the first JSON body. Client 1 sends
+            # bootstrap plus consecutive grants; client 2 supplies malformed bytes.
+            clients[0].tx(first[:17])
+            clients[1].tx(issuer.replay(gvrsn=Vrsn_2_0) + b''.join(exn.raw + atc for exn, atc in grants[1:]))
+            clients[2].tx(b'not-a-CESR-frame')
+
+            def finish(tymth, tock=0.01, **kwa):
+                """Complete the fragmented client only after the other grants deliver."""
+                yield tock
+                while tymth() < 1.2:
+                    yield tock
+                assert {item['grant'] for item in received} == {exn.said for exn, _ in grants[1:]}
+                assert dolly.db.submissions.get((grants[0][0].said,)) is None
+                clients[0].tx(first[17:])
+                while tymth() < 2.4:
+                    yield tock
+                assert {item['grant'] for item in received} == {exn.said for exn, _ in grants}
+
+            intake = TcpIntake(dolly, raw)
+            doers = [http.ServerDoer(hook), tcp.ServerDoer(raw),
+                     *[tcp.ClientDoer(client) for client in clients], intake, dolly, doing.doify(finish)]
+            doing.Doist(real=True, tock=0.01, limit=2.5).do(doers=doers)
+            assert intake.sessions == {}
+            assert all(item['business'] == {'entitlement': 'read'} for item in received)
+        finally:
+            dolly.close()
+            for client in clients:
+                client.close()
+            raw.close()
+            hook.close()
+
+
+def freePort():
+    """Reserve an ephemeral test port long enough to select a process listener."""
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        return sock.getsockname()[1]
+
+
+@pytest.mark.parametrize('encrypted', [False, True])
+def test_installed_wheel_dual_listener_start_stop_restart_and_local_inspect(tmp_path, encrypted):
+    """Run the actual console executable outside source with persistent identity.
+
+    Both transports report a packaged non-vLEI credential. SIGTERM cancels the
+    service; restart preserves delivered state and accepts a later TCP grant
+    without replay. Encrypted authentication remains required, and passing a
+    passcode to an unencrypted identity cannot migrate its Keeper.
+    """
+    received = []
+
+    class Hook(BaseHTTPRequestHandler):
+        """Serve actual callback requests while the installed process runs."""
+
+        def do_POST(self):
+            """Capture and acknowledge one complete JSON projection."""
+            received.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
+            self.send_response(200)
+            self.send_header('Content-Length', '2')
+            self.end_headers()
+            self.wfile.write(b'{}')
+
+        def log_message(self, format, *args):
+            """Keep routine test HTTP access logs out of subprocess diagnostics."""
+            pass
+
+    hook = ThreadingHTTPServer(('127.0.0.1', 0), Hook)
+    thread = threading.Thread(target=hook.serve_forever, daemon=True)
+    thread.start()
+    name = f'dolly-installed-{uuid4().hex}'
+    passcode = '0123456789abcdefghijk'
+    with openHby(name=name, temp=False, bran=passcode if encrypted else None,
+                 version=Vrsn_2_0) as hby:
+        verifier = hby.makeHab(name='verifier').pre
+        aeid = hby.mgr.aeid
+    with openHby(name=f'{name}-source', version=Vrsn_2_0) as source:
+        issuer = source.makeHab(name='issuer')
+        schema = load('entitlement-v2')
+        credential = acdcmap(israid=issuer.pre, schema=schema.sed,
+                             attribute=dict(d='', entitlement='installed-wheel'))
+        grants = [grant(issuer, verifier, f'installed {index}', origin=signed(credential, issuer))
+                  for index in range(3)]
+        policy = tmp_path / 'policy.json'
+        policy.write_text(json.dumps(dict(issuers=[issuer.pre], schemas=[schema.said],
+            fields={'entitlement': 'a/entitlement'}, required=['entitlement'],
+            observer='http://unused.test/', webhook=f'http://127.0.0.1:{hook.server_port}/hook')))
+        httpPort, tcpPort = freePort(), freePort()
+        executable = shutil.which('dolly')
+        auth = ['--name', name, '--passcode', passcode, '--no-prompt']
+        command = [executable, 'server', 'start', '--direct', *auth, '--alias', 'verifier',
+                   '--config', str(policy), '--http', str(httpPort), '--tcp', str(tcpPort)]
+        process = None
+
+        def waitFor(predicate):
+            """Wait a bounded interval for real process/transport state to settle."""
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if predicate():
+                    return
+                if process is not None and process.poll() is not None:
+                    raise AssertionError(process.communicate())
+                time.sleep(0.025)
+            raise AssertionError('installed Dolly did not reach expected state')
+
+        def ready():
+            """Read the actual installed HTTP listener's readiness response."""
+            try:
+                with urlopen(f'http://127.0.0.1:{httpPort}/health', timeout=0.2) as response:
+                    return response.status == 200
+            except (URLError, TimeoutError):
+                return False
+
+        def inspect(said):
+            """Query persisted state through the authenticated read-only executable."""
+            result = subprocess.run([executable, 'inspect', *auth, '--grant', said],
+                cwd=tmp_path, capture_output=True, text=True, timeout=5)
+            assert result.returncode == 0, result.stdout + result.stderr
+            return json.loads(result.stdout)
+
+        try:
+            if encrypted:
+                wrong = command.copy()
+                wrong[wrong.index(passcode)] = 'wrong-passcode-value1'
+                refused = subprocess.run(wrong, cwd=tmp_path, capture_output=True, text=True, timeout=5)
+                assert refused.returncode != 0
+            for phase in range(2):
+                process = subprocess.Popen(command, cwd=tmp_path, stdout=subprocess.PIPE,
+                                           stderr=subprocess.PIPE, text=True)
+                waitFor(ready)
+                if phase == 0:
+                    with socket.create_connection(('127.0.0.1', tcpPort)) as connection:
+                        wire = issuer.replay(gvrsn=Vrsn_2_0) + grants[0][0].raw + grants[0][1]
+                        connection.sendall(wire[:23])
+                        time.sleep(0.05)
+                        connection.sendall(wire[23:])
+                    request = Request(f'http://127.0.0.1:{httpPort}/ingest',
+                        data=grants[1][0].raw + grants[1][1], headers={'Content-Type': 'application/cesr'})
+                    with urlopen(request, timeout=2) as response:
+                        assert response.status == 202
+                    waitFor(lambda: len(received) == 2)
+                    for exn, _ in grants[:2]:
+                        record = inspect(exn.said)
+                        assert record['state'] == 'accepted' and record['delivered']
+                else:
+                    assert inspect(grants[0][0].said)['delivered']
+                    with socket.create_connection(('127.0.0.1', tcpPort)) as connection:
+                        connection.sendall(grants[2][0].raw + grants[2][1])
+                    waitFor(lambda: len(received) == 3)
+                    assert inspect(grants[2][0].said)['delivered']
+                process.send_signal(signal.SIGTERM)
+                stdout, stderr = process.communicate(timeout=5)
+                assert process.returncode == 0, stdout + stderr
+                process = None
+            assert {item['grant'] for item in received} == {exn.said for exn, _ in grants}
+            with openHby(name=name, temp=False, bran=passcode if encrypted else None,
+                         version=Vrsn_2_0) as hby:
+                assert hby.mgr.aeid == aeid  # Starting an unencrypted verifier did not migrate it.
+        finally:
+            if process is not None and process.poll() is None:
+                process.send_signal(signal.SIGTERM)
+                process.communicate(timeout=5)
+            hook.shutdown()
+            hook.server_close()
+            thread.join(timeout=2)
