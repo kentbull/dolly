@@ -2,6 +2,7 @@ Dolly contains application code extracted from kentbull/keripy, Apache-2.0.
 The original module identified composition informed by kentbull/sally at
 ed789de4aa5f536d5838b4ff0d4d48a4e9dbf525 (Apache-2.0).
 KERIpy source derives from WebOfTrust/keripy. Original copyright and license
-notices are preserved in LICENSE and source; see docs/extraction.md for the
-bounded source map and locally designed changes. Git commit metadata alone is
-not an assertion of original authorship or responsibility.
+notices are preserved in LICENSE and source. The historical source map is at
+https://github.com/kentbull/dolly/blob/2a178a13b14a5549811c365bf57cef4c07528d87/docs/extraction.md
+Maintained documentation belongs to the independent keri-v2 workspace. Git
+commit metadata alone is not an assertion of original authorship or responsibility.
