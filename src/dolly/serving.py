@@ -1,7 +1,7 @@
-"""Sally-like application policy over native and legacy KERIpy verification.
+"""Sally-like application policy over ACDC v2 and v1 KERIpy verification.
 
 Composition informed by Sally ed789de (Apache-2.0); cryptographic verification
-remains in Exchanger, native IPEX/Rever, and legacy Tevery/Verifier.
+remains in Exchanger, ACDC v2 IPEX/Rever, and legacy Tevery/Verifier.
 """
 from dataclasses import asdict, dataclass, field
 import math
@@ -113,7 +113,7 @@ class Context(doing.DoDoer):
         maximumAge/timeout configure evidence freshness and HTTP delivery.
         Optional db/evidence/legacy/sections stores support persistent reopen;
         this context closes them. The shared SectionBaser feeds parser intake
-        and graphPolicy-aware native verification, without expanding retained
+        and graphPolicy-aware ACDC v2 IPEX verification, without expanding retained
         credential projections. EvidenceContext is scheduled once as a child,
         owning its single KRAM pruner until cancellation. Invalid timeouts
         raise ValueError.
@@ -143,7 +143,7 @@ class Context(doing.DoDoer):
         self.scy = Sectioner(db=hby.db, sections=self.sections)
         ipexing.loadHandlers(hby, self.exc, Notices(), self.rgy,
                             graphPolicy=graphPolicy, sections=self.sections)
-        self.native = self.exc.routes['/ipex/grant'].native
+        self.acdcV2Ipex = self.exc.routes['/ipex/grant'].acdcV2
         self.app = falcon.App()
         self.app.add_route('/ingest', IntakeEnd(self))
         self.app.add_route('/', IntakeEnd(self))
@@ -169,7 +169,7 @@ class Context(doing.DoDoer):
 
         ``raw`` may contain consecutive KEL, registry, credential, section, or
         EXN frames. ``version`` selects the initial stream genus. Independent
-        schema sections enter the same store used for live and retained native
+        schema sections enter the same store used for live and retained ACDC v2 IPEX
         verification; they never replace the grant's revealed view. Incomplete
         framing or invalid evidence raises ValidationError; concrete processor
         escrows retain retryable dependencies. HTTP success means intake only.
@@ -267,30 +267,30 @@ class Context(doing.DoDoer):
         self.db.observed.pin((regid,), Observation(stamp, head, self.observer))
         return True
 
-    def _nativeCredential(self, exn):
+    def _acdcV2GrantCredential(self, exn):
         """Return the retained origin credential, or None for an empty grant.
 
-        ``exn`` is the accepted native grant. Revalidate its proof and semantics
+        ``exn`` is the accepted ACDC v2 IPEX grant. Revalidate its proof and semantics
         before making any application decision, then apply current standing to
         every disclosed node. Missing evidence remains retryable; invalid proof
         or current standing raises ValidationError. Selection never resolves a
         fuller cached disclosure in place of this grant's retained material.
         """
-        credential, nests = self._nativeDisclosure(exn)
+        credential, nests = self._acdcV2GrantDisclosure(exn)
         if credential is not None:
-            self._nativeCurrentStanding(nests)
+            self._acdcV2CurrentStanding(nests)
         return credential
 
-    def _nativeDisclosure(self, exn):
+    def _acdcV2GrantDisclosure(self, exn):
         """Return the core-verified retained origin and its disclosed graph nodes.
 
-        ``exn`` must name a retained native grant. Empty disclosures return
+        ``exn`` must name a retained ACDC v2 IPEX grant. Empty disclosures return
         (None, []). Invalid semantics/proofs raise ValidationError; unavailable
         dependencies retain their core exception. This boundary applies no
         Dolly current-reporting or observation policy and never expands a view.
         """
-        if not self.native.verifyAccepted(exn.said):
-            raise ValidationError('native IPEX proof or semantics failed')
+        if not self.acdcV2Ipex.verifyAccepted(exn.said):
+            raise ValidationError('ACDC v2 IPEX proof or semantics failed')
         origins = exn.sad['a']['o']
         if not origins:
             return None, []
@@ -298,7 +298,7 @@ class Context(doing.DoDoer):
         return next(nest.serder for nest in nests if nest.serder.said == origins[0]), nests
 
     def inspectHistorical(self, grant):
-        """Inspect a retained authenticated native grant without reporting it.
+        """Inspect a retained authenticated ACDC v2 IPEX grant without reporting it.
 
         ``grant`` is its EXN SAID. Return selected retained values, disclosure
         facts, exact view references and authenticated bound-event references.
@@ -308,14 +308,14 @@ class Context(doing.DoDoer):
         acceptance, timestamp, or hook. Reporting allowlists and required fields
         apply to current reporting; inspection uses only configured field paths.
 
-        Unknown/non-native grants or invalid proofs raise ValidationError;
+        Unknown or non-ACDC-v2 grants or invalid proofs raise ValidationError;
         unavailable dependencies retain their core exception. Core graph proof
         verification remains authoritative, including its configured graphPolicy.
         """
         exn = self.hby.db.exns.get((grant,))
         if exn is None or exn.pvrsn.major != 2 or exn.route != '/ipex/grant':
-            raise ValidationError('historical inspection requires a retained native grant')
-        credential, nests = self._nativeDisclosure(exn)
+            raise ValidationError('historical inspection requires a retained ACDC v2 IPEX grant')
+        credential, nests = self._acdcV2GrantDisclosure(exn)
         values, disclosure = project(credential, self.fields) if credential else ({}, {})
         return dict(purpose='historical-evidence', proofValidity='valid',
             currentStanding='not-evaluated', grant=grant,
@@ -336,10 +336,10 @@ class Context(doing.DoDoer):
         for nest in nests:
             credential = nest.serder
             bound = []
-            proofs = [proof for proof in self.native._blindProofs(nest)
+            proofs = [proof for proof in self.acdcV2Ipex._blindProofs(nest)
                       if proof.clan == BoundState and proof.acdc == credential.said]
-            if proofs and (regid := self.native._graphRegistry(credential, nest)):
-                _, events = self.native._registryEvidence(regid)
+            if proofs and (regid := self.acdcV2Ipex._graphRegistry(credential, nest)):
+                _, events = self.acdcV2Ipex._registryEvidence(regid)
                 for event in events:
                     for proof in proofs:
                         if event.ilk != 'bup' or event.sad['b'] != proof.said:
@@ -354,10 +354,10 @@ class Context(doing.DoDoer):
                 view=Diger(ser=credential.raw).qb64, boundEvents=bound))
         return sources
 
-    def _nativeCurrentStanding(self, nests):
+    def _acdcV2CurrentStanding(self, nests):
         """Require current standing for every node in retained parsed ``nests``.
 
-        Historical bound-edge validity remains the native verifier's decision.
+        Historical bound-edge validity remains the ACDC v2 IPEX verifier's decision.
         This additional application rule uses the configured current observer.
         Return None after all nodes pass; raise MissingChainError for stale or
         absent observations, or ValidationError for a node no longer issued.
@@ -370,11 +370,11 @@ class Context(doing.DoDoer):
             for regid in registries:
                 if not self.fresh(regid):
                     raise MissingChainError('observer evidence is missing or stale')
-                state = self.native._vetRegistry(regid, self.native._blindProofs(nest),
+                state = self.acdcV2Ipex._vetRegistry(regid, self.acdcV2Ipex._blindProofs(nest),
                                                  credential.said, acdc=credential)
                 if state is None or state.state != 'issued':
                     raise ValidationError('credential is not currently issued')
-            for _, regid in self.native._presentationRegistries(credential) or []:
+            for _, regid in self.acdcV2Ipex._presentationRegistries(credential) or []:
                 if not self.fresh(regid):
                     raise MissingChainError('presentation registry observation is missing or stale')
 
@@ -496,7 +496,7 @@ class Context(doing.DoDoer):
                 continue
             exn = self.hby.db.exns.get((record.grant,))
             try:
-                credential = (self._nativeCredential(exn) if exn.pvrsn.major == 2
+                credential = (self._acdcV2GrantCredential(exn) if exn.pvrsn.major == 2
                               else self._legacyCredential(exn))
                 if credential is None:
                     # Protocol-valid empty disclosure is terminal reporting work,
@@ -576,7 +576,7 @@ class Context(doing.DoDoer):
                     if (regid := issuerRegistry(nest.serder)) and not self.fresh(regid):
                         registries.add(regid)
                     registries.update(regid for _, regid in
-                        self.native._presentationRegistries(nest.serder) or []
+                        self.acdcV2Ipex._presentationRegistries(nest.serder) or []
                         if not self.fresh(regid))
                     # Nonissuer source triples are untrusted fetch hints until
                     # the core validates their exact accepted TEL event.

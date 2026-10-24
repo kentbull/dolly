@@ -29,8 +29,8 @@ from keri.peer import exchanging
 from keri.vdr import eventing as legacy, verifying
 
 
-def native(*events):
-    """Frame public native messages with explicit empty attachment groups."""
+def frame_v2_events(*events):
+    """Frame public ACDC v2 messages with explicit empty attachment groups."""
     foot = Counter(Codens.AttachmentGroup, count=0, version=Vrsn_2_0).qb64b
     return b''.join(event.raw + foot for event in events)
 
@@ -100,7 +100,7 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                 nearSource = SealSource(Number(num=issuer.kever.sn), Diger(qb64=issuer.kever.serder.said))
                 revoked, revokeEvent = publish('revoked')
                 public = authority.replay(gvrsn=Vrsn_2_0) + issuer.replay(gvrsn=Vrsn_2_0)
-                public += native(rip, issueEvent, revokeEvent)
+                public += frame_v2_events(rip, issueEvent, revokeEvent)
                 proofNear = messagize(near, bonds=[nearSource], framed=False, gvrsn=Vrsn_2_0)
                 proofFar = messagize(far, bonds=[issued.data, revoked.data], framed=False, gvrsn=Vrsn_2_0)
                 plan = {'dp': [[[near.schema['$id'], '/', []],
@@ -126,7 +126,7 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                                 exn, atc = grant(issuer, dhab.pre, 'historical bound graph',
                                     origin=proofNear, artifacts=[proofFar], modifiers=plan)
                                 assert dolly.ingest(exn.raw + atc) == [dict(grant=exn.said, state='pending')]
-                            assert dolly.native.verifyAccepted(exn.said)
+                            assert dolly.acdcV2Ipex.verifyAccepted(exn.said)
                             assert not dolly.fresh(registry.regk)
                             before = asdict(dolly.db.submissions.get((exn.said,)))
                             inspected = dolly.inspectHistorical(exn.said)
@@ -178,12 +178,12 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                             else:
                                 assert inspected == expected  # No KEL/TEL/grant replay on reopen.
                                 with pytest.raises(MissingChainError, match='observer evidence'):
-                                    dolly._nativeCredential(exn)
+                                    dolly._acdcV2GrantCredential(exn)
                             with pytest.raises(ValidationError, match='proof or semantics'):
                                 dolly.inspectHistorical(invalid.said)
                             assert dolly.db.submissions.get((invalid.said,)) is None
                             # Fuller cached evidence cannot widen historical inspection.
-                            dolly.ingest(native(sectattr(full.sad['a'])))
+                            dolly.ingest(frame_v2_events(sectattr(full.sad['a'])))
                             assert dolly.inspectHistorical(exn.said) == expected
                             doing.Doist(real=True, tock=0.01, limit=0.2).do(
                                 doers=[http.ServerDoer(server=server), dolly])

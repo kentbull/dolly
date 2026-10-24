@@ -2,7 +2,7 @@
 
 Dolly is an R&D credential reporting service using KERIpy for KERI/ACDC
 verification. It supports direct HTTP/TCP intake and policy-controlled webhook
-delivery. Native v2 requires KRAM; v1 follows the legacy verification path.
+delivery. ACDC v2 IPEX requires KRAM; v1 follows its established verification path.
 
 Use Python 3.14 and the dependency pinned in `pyproject.toml`. After installation,
 run `dolly --help` for commands. Component tests remain in `tests/`.

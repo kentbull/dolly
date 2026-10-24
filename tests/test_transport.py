@@ -34,7 +34,7 @@ def signed(credential, hab):
         hab (Hab): Issuer habitat with the matching current signing keys.
 
     Returns:
-        bytearray: Native node stream with its transferable signature group, using
+        bytearray: ACDC v2 credential node stream with its transferable signature group, using
         production messagize and no imports from KERIpy protocol test fixtures."""
     return messagize(credential, tsgs=[(hab.kever.prefixer,
         Number(sn=hab.kever.lastEst.s), Diger(qb64=hab.kever.lastEst.d),

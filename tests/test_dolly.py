@@ -19,15 +19,15 @@ from keri.core import (Blinder, Noncer, Compactor, messagize, Counter, Codens, N
 from keri.peer import exchanging
 from keri.vdr import eventing as legacy, verifying
 from keri.vc import proving, protocoling
-from keri.acdc import Regery, Registrar as NativeRegistrar, apply, offer, agree, admit, update
+from keri.acdc import Regery, Registrar as AcdcV2Registrar, apply, offer, agree, admit, update
 from keri.acdc.sectioning import SectionBaser
 from keri.app.credentialing import Wallet
-from keri.cli.common.native_exchange import Peer, Intake
+from keri.cli.common.acdc_v2_ipex import Peer, Intake
 from keri.help import helping
 
 
-def native(*events):
-    """Frame native public evidence with an explicit empty attachment group."""
+def frame_v2_events(*events):
+    """Frame ACDC v2 public evidence with an explicit empty attachment group."""
     empty = Counter(Codens.AttachmentGroup, count=0, version=Vrsn_2_0).qb64b
     return b''.join(event.raw + empty for event in events)
 
@@ -92,7 +92,7 @@ def test_empty_grant_is_terminal_and_later_grants_report_after_reopen(tmp_path):
                         assert result == [dict(grant=empty.said, state='non-reportable'),
                                           dict(grant=normal.said, state='accepted')]
                         assert dolly.exc.complete(empty.said)
-                        assert dolly.native.verifyAccepted(empty.said)
+                        assert dolly.acdcV2Ipex.verifyAccepted(empty.said)
                         record = dolly.db.submissions.get((empty.said,))
                         assert record.reason == 'grant discloses no credential'
                         assert record.payload == {} and not record.delivered
@@ -109,7 +109,7 @@ def test_empty_grant_is_terminal_and_later_grants_report_after_reopen(tmp_path):
 
 
 @pytest.mark.parametrize('attachmentHeader', [False, True])
-def test_http_json_native_registry_first_and_invalid_framing(attachmentHeader):
+def test_http_json_acdc_v2_registry_first_and_invalid_framing(attachmentHeader):
     """Accept JSON ACDC before KEL and reject malformed raw/header framing.
 
     Both transport forms preserve serialized evidence exactly. Acknowledged
@@ -133,35 +133,35 @@ def test_http_json_native_registry_first_and_invalid_framing(attachmentHeader):
             client = testing.TestClient(dolly.app)
             headers = {'Content-Type': CESR_CONTENT_TYPE}
             if attachmentHeader:
-                atc = native(rip)[len(rip.raw):].decode('ascii')
+                atc = frame_v2_events(rip)[len(rip.raw):].decode('ascii')
                 body, headers[CESR_ATTACHMENT_HEADER] = rip.raw, atc
                 decoded, version = IntakeEnd.decode(body, atc, None)
-                assert decoded == native(rip) and version == Vrsn_2_0
+                assert decoded == frame_v2_events(rip) and version == Vrsn_2_0
             else:
-                body = native(rip, issued)
+                body = frame_v2_events(rip, issued)
                 assert IntakeEnd.decode(body, None, None) == (body, Vrsn_2_0)
             response = client.simulate_post('/ingest', body=body, headers=headers)
             assert response.status_code == 202
             assert dolly.rgy.store.head(rip.said) is None  # No KEL anchor yet.
             if attachmentHeader:
-                assert client.simulate_post('/ingest', body=native(issued),
+                assert client.simulate_post('/ingest', body=frame_v2_events(issued),
                     headers={'Content-Type': CESR_CONTENT_TYPE}).status_code == 202
             assert client.simulate_post('/ingest', body=ihab.replay(gvrsn=Vrsn_2_0),
                 headers={'Content-Type': CESR_CONTENT_TYPE}).status_code == 202
             assert dolly.rgy.store.head(rip.said).qb64 == issued.said
             invalid = [
-                (native(rip), {'CESR-Genus': '1'}),
-                (native(rip), {'CESR-Genus': '3'}),
+                (frame_v2_events(rip), {'CESR-Genus': '1'}),
+                (frame_v2_events(rip), {'CESR-Genus': '3'}),
                 (rip.raw[:-1], {}),
                 (b'{broken', {}),
                 (rip.raw, {CESR_ATTACHMENT_HEADER: '-???'}),
-                (native(rip, issued), {CESR_ATTACHMENT_HEADER: ''}),
+                (frame_v2_events(rip, issued), {CESR_ATTACHMENT_HEADER: ''}),
             ]
             for body, extra in invalid:
                 response = client.simulate_post('/ingest', body=body,
                     headers={'Content-Type': CESR_CONTENT_TYPE, **extra})
                 assert response.status_code == 400, (body, extra, response.text)
-            assert client.simulate_post('/ingest', body=native(rip),
+            assert client.simulate_post('/ingest', body=frame_v2_events(rip),
                 headers={'Content-Type': 'application/json'}).status_code == 415
             assert dolly.rgy.store.head(rip.said).qb64 == issued.said
             assert list(dolly.db.submissions.getTopItemIter()) == []
@@ -259,9 +259,9 @@ def test_dolly_independent_schema_http_arrival_preserves_disclosure(tmp_path, ar
                         def section(message):
                             """Exercise JSON-first section framing in both HTTP forms."""
                             if schemaUse == 'edge':
-                                post(message.raw, native(message)[len(message.raw):].decode('ascii'))
+                                post(message.raw, frame_v2_events(message)[len(message.raw):].decode('ascii'))
                             else:
-                                post(native(message))
+                                post(frame_v2_events(message))
 
                         assert verifier.db.schema.get(schema) is None
                         if phase == 0:
@@ -269,7 +269,7 @@ def test_dolly_independent_schema_http_arrival_preserves_disclosure(tmp_path, ar
                             # Framing success cannot turn an incomplete section
                             # or a wrong stream genus into schema evidence.
                             for raw, extra in [(schemaMessage.raw[:-1], {}),
-                                    (native(schemaMessage), {'CESR-Genus': '1'})]:
+                                    (frame_v2_events(schemaMessage), {'CESR-Genus': '1'})]:
                                 response = client.simulate_post('/ingest', body=raw,
                                     headers={'Content-Type': CESR_CONTENT_TYPE, **extra})
                                 assert response.status_code == 400
@@ -296,12 +296,12 @@ def test_dolly_independent_schema_http_arrival_preserves_disclosure(tmp_path, ar
                         if arrival == 'restart' and phase == 0:
                             continue
                         assert dolly.exc.complete(exn.said)
-                        assert dolly.native.verifyAccepted(exn.said)
+                        assert dolly.acdcV2Ipex.verifyAccepted(exn.said)
                         before = dolly.db.submissions.get((exn.said,)).payload
                         retained = exchanging.loadParsedNestedSubstreams(verifier, exn.said)[0].serder.raw
                         section(sectattr(full.sad['a']))
                         assert sections.messages.get(sectattr(full.sad['a']).said) is not None
-                        assert dolly.native.verifyAccepted(exn.said)
+                        assert dolly.acdcV2Ipex.verifyAccepted(exn.said)
                         assert exchanging.loadParsedNestedSubstreams(verifier, exn.said)[0].serder.raw == retained
                         assert dolly.db.submissions.get((exn.said,)).payload == before
                         doing.Doist(real=True, tock=0.01, limit=0.3).do(
@@ -339,7 +339,7 @@ def test_reopened_dolly_requires_active_observer_observation(tmp_path):
         blinder = Blinder.blind(acdc=credential.said, state='issued')
         issued = blindate(regid=rip.said, prior=rip.said, blid=blinder.said)
         ihab.interact(data=[dict(s=issued.sad['n'], d=issued.said)])
-        public = ihab.replay(gvrsn=Vrsn_2_0) + native(rip, issued)
+        public = ihab.replay(gvrsn=Vrsn_2_0) + frame_v2_events(rip, issued)
         obs = Observer(observer, readers=[dhab.pre], urls=['http://registrar.test/'])
         obs.ingest(dhab.replay(gvrsn=Vrsn_2_0))
         assert not obs.observe('http://registrar.test/', public)['rejected']
@@ -382,7 +382,7 @@ def test_reopened_dolly_requires_active_observer_observation(tmp_path):
 
 @pytest.mark.parametrize('binding', ['top', 'inner', 'oneway'])
 @pytest.mark.parametrize('transport', ['http', 'tcp'])
-def test_native_partial_full_grants_observer_acquisition_and_real_webhooks(binding, transport):
+def test_acdc_v2_partial_full_grants_observer_acquisition_and_real_webhooks(binding, transport):
     """Preserve actual disclosure hooks while the evidence child owns pruning.
 
     Each registry-binding form uses independently acquired observer evidence.
@@ -442,7 +442,7 @@ def test_native_partial_full_grants_observer_acquisition_and_real_webhooks(bindi
                    for app in (reg.app, obs.app, hookApp)]
         dolly = client = rawServer = None
         try:
-            assert not reg.ingest(ihab.replay(gvrsn=Vrsn_2_0) + native(rip, update))['rejected']
+            assert not reg.ingest(ihab.replay(gvrsn=Vrsn_2_0) + frame_v2_events(rip, update))['rejected']
             assert not reg.ingest(ohab.replay(gvrsn=Vrsn_2_0))['rejected']
             assert not obs.ingest(dhab.replay(gvrsn=Vrsn_2_0))['rejected']
             for server in servers:
@@ -737,7 +737,7 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
         authority, ihab = issuer.makeHab(name='authority'), issuer.makeHab(name='issuer')
         hhab, ohab, dhab = holder.makeHab(name='holder'), observer.makeHab(name='observer'), verifier.makeHab(name='dolly')
         irgy, hrgy = Regery(hby=issuer, temp=True), Regery(hby=holder, temp=True)
-        irar, hrar = NativeRegistrar(irgy), NativeRegistrar(hrgy)
+        irar, hrar = AcdcV2Registrar(irgy), AcdcV2Registrar(hrgy)
         farReg = irar.makeRegistry(name='authority', prefix=authority.pre)
         nearReg = irar.makeRegistry(name='entitlement', prefix=ihab.pre)
         presentationReg = hrar.makeRegistry(name='presentation', prefix=hhab.pre)
@@ -775,7 +775,7 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
         hwallet, dwallet = Wallet(holder, hrgy), None
         peer = Peer(holder, hrgy, hwallet, sections)
         public = bytes(authority.replay(gvrsn=Vrsn_2_0) + ihab.replay(gvrsn=Vrsn_2_0)
-                       + hhab.replay(gvrsn=Vrsn_2_0) + native(*rips, farIss, nearIss))
+                       + hhab.replay(gvrsn=Vrsn_2_0) + frame_v2_events(*rips, farIss, nearIss))
         received = []
 
         class Hook:
@@ -856,7 +856,7 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
             assert final.raw == draft.raw and final.said == draft.said
             peer.ingest(final.raw + fatc)
             assert peer.exc.complete(final.said)
-            assert not reg.ingest(hhab.replay(gvrsn=Vrsn_2_0) + native(presented))['rejected']
+            assert not reg.ingest(hhab.replay(gvrsn=Vrsn_2_0) + frame_v2_events(presented))['rejected']
             send(dollyURL, hhab.replay(gvrsn=Vrsn_2_0) + final.raw + fatc, duration=2.5)
             assert dolly.exc.complete(final.said)
             assert len(received) == 1, dolly.db.submissions.get((final.said,))
