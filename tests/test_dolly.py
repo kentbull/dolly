@@ -1,6 +1,8 @@
 """Dolly acceptance requires actual protocol proofs and actual webhook HTTP."""
 import json
 from dataclasses import asdict
+from pathlib import Path
+import ssl
 
 import falcon
 import pytest
@@ -9,35 +11,67 @@ from hio.core import http, tcp
 
 from keri import Vrsn_1_0, Vrsn_2_0, Kinds
 from keri.acdc import acdcmap, blindate, regcept, grant
+from keri.app.evidencing import EvidenceContext, signedQuery
 from keri.app.habbing import openHby
 from dolly.serving import Context as Dolly, TcpIntake
-from keri.app.registrar.serving import Context as Registrar
-from keri.app.observer.serving import Context as Observer, RegistrarPuller
 from keri.app.httping import CESR_CONTENT_TYPE, CESR_ATTACHMENT_HEADER
 from keri.core import (Blinder, Noncer, Compactor, messagize, Counter, Codens, Number, Diger,
                        SealSource, SealEvent, SerderKERI, Schemer, Parser)
 from keri.peer import exchanging
 from keri.vdr import eventing as legacy, verifying
 from keri.vc import proving, protocoling
-from keri.acdc import Regery, Registrar as NativeRegistrar, apply, offer, agree, admit, update
+from keri.acdc import Regery, Registrar as AcdcV2Registrar, apply, offer, agree, admit
 from keri.acdc.sectioning import SectionBaser
 from keri.app.credentialing import Wallet
-from keri.cli.common.native_exchange import Peer, Intake
+from keri.cli.common.acdc_v2_ipex import Peer, Intake
 from keri.help import helping
+from kfobserver.core.evidence import Context as Observer
+from kfobserver.core.evidence_observing import RegistrarPuller, SourceTrust
+from kfregistrar.core.serving import makeContext as makeRegistrar
 
 
-def native(*events):
-    """Frame native public evidence with an explicit empty attachment group."""
+TLS_DIR = Path(__file__).with_name('tls')
+SERVER_TLS = TLS_DIR / 'server.pem'
+WRONG_TLS = TLS_DIR / 'client.pem'
+
+
+def observerTrust(url, *, cafilepath=SERVER_TLS, certedhost=None):
+    """Return the explicit HTTPS source trust used by Dolly tests."""
+    trust = dict(url=url, cafilepath=str(cafilepath))
+    if certedhost is not None:
+        trust['certedhost'] = certedhost
+    return trust
+
+
+def tlsServer(app, certificate=SERVER_TLS):
+    """Open an HIO HTTPS server with the repository's one-way TLS fixture."""
+    servant = tcp.ServerTls(host='127.0.0.1', port=0, keypath=str(certificate),
+                            certpath=str(certificate), certify=ssl.CERT_NONE)
+    server = http.Server(servant=servant, app=app)
+    assert server.reopen()
+    server.servant.eha = server.servant.ha
+    return server
+
+
+def registrarContext(hby, *, observers=()):
+    """Return the KF registrar's observer-facing full-evidence service."""
+    ctx = makeRegistrar(hby, observers=observers, fullEvidence=True)
+    ctx.app = ctx.externalApp
+    return ctx
+
+
+def frame_v2_events(*events):
+    """Frame ACDC v2 public evidence with an explicit empty attachment group."""
     empty = Counter(Codens.AttachmentGroup, count=0, version=Vrsn_2_0).qb64b
     return b''.join(event.raw + empty for event in events)
 
 
-def test_empty_grant_is_terminal_and_later_grants_report_after_reopen(tmp_path):
-    """Keep empty grants terminal and prove later hooks across a full reopen.
+def test_empty_grant_is_refused_and_later_grants_report_after_reopen(tmp_path):
+    """Refuse an empty bare Grant and prove valid later hooks across a full reopen.
 
     Independent sender and persistent verifier stores exercise real EXN/KRAM
-    verification. Each run sends an empty and reportable grant through the
-    normal intake/Doer path; only reportable grants may reach the HTTP hook.
+    verification. Each run refuses an empty bare Grant at authoring, then sends
+    a reportable Grant through the normal intake/Doer path.
     """
     from keri.acdc.regbasing import RegBaser
     from dolly.serving import DollyBaser
@@ -70,38 +104,31 @@ def test_empty_grant_is_terminal_and_later_grants_report_after_reopen(tmp_path):
                 with openHby(name='empty-grant-dolly', temp=False,
                              headDirPath=str(tmp_path), version=Vrsn_2_0) as verifier:
                     dhab = verifier.habByName('dolly') or verifier.makeHab(name='dolly')
-                    evidence = Registrar(verifier, reger=RegBaser(name='empty-grant-dolly',
+                    evidence = EvidenceContext(verifier, reger=RegBaser(name='empty-grant-dolly',
                         headDirPath=str(tmp_path), temp=False))
                     dolly = Dolly(verifier, dhab, issuers=[ihab.pre],
                         schemas=[credential.schema['$id']], fields={'status': 'a/status'},
-                        observer='http://unused.test/', webhook=url, evidence=evidence,
+                        observer=observerTrust('https://unused.test/'), webhook=url, evidence=evidence,
                         legacy=verifying.Verifier(
                             verifier, reger=legacy.Reger(name='empty-grant-dolly',
                                 headDirPath=str(tmp_path), temp=False)),
                         db=DollyBaser(name='empty-grant-dolly', headDirPath=str(tmp_path), temp=False))
                     try:
                         if phase:
-                            for empty, normal in grants:
-                                assert dolly.exc.complete(empty.said)
-                                assert dolly.db.submissions.get((empty.said,)).state == 'non-reportable'
+                            for normal in grants:
                                 assert dolly.db.submissions.get((normal.said,)).delivered
-                        empty, eatc = grant(ihab, dhab.pre, f'empty {phase}', modifiers={'dp': [[]]})
+                        with pytest.raises(ValueError, match='bare Grant'):
+                            grant(ihab, dhab.pre, f'empty {phase}')
                         normal, natc = grant(ihab, dhab.pre, f'normal {phase}', origin=proof)
-                        result = dolly.ingest(ihab.replay(gvrsn=Vrsn_2_0)
-                            + empty.raw + eatc + normal.raw + natc)
-                        assert result == [dict(grant=empty.said, state='non-reportable'),
-                                          dict(grant=normal.said, state='accepted')]
-                        assert dolly.exc.complete(empty.said)
-                        assert dolly.native.verifyAccepted(empty.said)
-                        record = dolly.db.submissions.get((empty.said,))
-                        assert record.reason == 'grant discloses no credential'
-                        assert record.payload == {} and not record.delivered
+                        result = dolly.ingest(
+                            ihab.replay(gvrsn=Vrsn_2_0) + normal.raw + natc)
+                        assert result == [dict(grant=normal.said, state='accepted')]
                         doing.Doist(real=True, tock=0.01, limit=0.4).do(
                             doers=[http.ServerDoer(server=server), dolly])
                         assert [item['grant'] for item in received] == [
-                            normal.said for _, normal in [*grants, (empty, normal)]]
+                            item.said for item in [*grants, normal]]
                         assert dolly.db.submissions.get((normal.said,)).delivered
-                        grants.append((empty, normal))
+                        grants.append(normal)
                     finally:
                         dolly.close()
     finally:
@@ -109,7 +136,7 @@ def test_empty_grant_is_terminal_and_later_grants_report_after_reopen(tmp_path):
 
 
 @pytest.mark.parametrize('attachmentHeader', [False, True])
-def test_http_json_native_registry_first_and_invalid_framing(attachmentHeader):
+def test_http_json_acdc_v2_registry_first_and_invalid_framing(attachmentHeader):
     """Accept JSON ACDC before KEL and reject malformed raw/header framing.
 
     Both transport forms preserve serialized evidence exactly. Acknowledged
@@ -128,40 +155,40 @@ def test_http_json_native_registry_first_and_invalid_framing(attachmentHeader):
                          blid=Blinder.blind(acdc=Diger(ser=b'credential').qb64, state='issued').said)
         ihab.interact(data=[dict(s=issued.sad['n'], d=issued.said)])
         dolly = Dolly(verifier, dhab, issuers=[ihab.pre], schemas=[], fields={},
-                      observer='http://unused.test/', webhook='http://unused.test/')
+                      observer=observerTrust('https://unused.test/'), webhook='http://unused.test/')
         try:
             client = testing.TestClient(dolly.app)
             headers = {'Content-Type': CESR_CONTENT_TYPE}
             if attachmentHeader:
-                atc = native(rip)[len(rip.raw):].decode('ascii')
+                atc = frame_v2_events(rip)[len(rip.raw):].decode('ascii')
                 body, headers[CESR_ATTACHMENT_HEADER] = rip.raw, atc
                 decoded, version = IntakeEnd.decode(body, atc, None)
-                assert decoded == native(rip) and version == Vrsn_2_0
+                assert decoded == frame_v2_events(rip) and version == Vrsn_2_0
             else:
-                body = native(rip, issued)
+                body = frame_v2_events(rip, issued)
                 assert IntakeEnd.decode(body, None, None) == (body, Vrsn_2_0)
             response = client.simulate_post('/ingest', body=body, headers=headers)
             assert response.status_code == 202
             assert dolly.rgy.store.head(rip.said) is None  # No KEL anchor yet.
             if attachmentHeader:
-                assert client.simulate_post('/ingest', body=native(issued),
+                assert client.simulate_post('/ingest', body=frame_v2_events(issued),
                     headers={'Content-Type': CESR_CONTENT_TYPE}).status_code == 202
             assert client.simulate_post('/ingest', body=ihab.replay(gvrsn=Vrsn_2_0),
                 headers={'Content-Type': CESR_CONTENT_TYPE}).status_code == 202
             assert dolly.rgy.store.head(rip.said).qb64 == issued.said
             invalid = [
-                (native(rip), {'CESR-Genus': '1'}),
-                (native(rip), {'CESR-Genus': '3'}),
+                (frame_v2_events(rip), {'CESR-Genus': '1'}),
+                (frame_v2_events(rip), {'CESR-Genus': '3'}),
                 (rip.raw[:-1], {}),
                 (b'{broken', {}),
                 (rip.raw, {CESR_ATTACHMENT_HEADER: '-???'}),
-                (native(rip, issued), {CESR_ATTACHMENT_HEADER: ''}),
+                (frame_v2_events(rip, issued), {CESR_ATTACHMENT_HEADER: ''}),
             ]
             for body, extra in invalid:
                 response = client.simulate_post('/ingest', body=body,
                     headers={'Content-Type': CESR_CONTENT_TYPE, **extra})
                 assert response.status_code == 400, (body, extra, response.text)
-            assert client.simulate_post('/ingest', body=native(rip),
+            assert client.simulate_post('/ingest', body=frame_v2_events(rip),
                 headers={'Content-Type': 'application/json'}).status_code == 415
             assert dolly.rgy.store.head(rip.said).qb64 == issued.said
             assert list(dolly.db.submissions.getTopItemIter()) == []
@@ -238,8 +265,8 @@ def test_dolly_independent_schema_http_arrival_preserves_disclosure(tmp_path, ar
                     dolly = Dolly(verifier, dhab, issuers=[ihab.pre],
                         schemas=[schema if schemaUse == 'own' else partial.schema['$id']],
                         fields={'shown': 'a/shown/value', 'private': 'a/private/value'},
-                        required=['shown'], observer='http://unused.test/', webhook=webhook,
-                        evidence=Registrar(verifier, reger=RegBaser(name=name,
+                        required=['shown'], observer=observerTrust('https://unused.test/'), webhook=webhook,
+                        evidence=EvidenceContext(verifier, reger=RegBaser(name=name,
                             headDirPath=str(tmp_path), temp=False)),
                         legacy=verifying.Verifier(verifier, reger=legacy.Reger(name=name,
                             headDirPath=str(tmp_path), temp=False)),
@@ -259,9 +286,9 @@ def test_dolly_independent_schema_http_arrival_preserves_disclosure(tmp_path, ar
                         def section(message):
                             """Exercise JSON-first section framing in both HTTP forms."""
                             if schemaUse == 'edge':
-                                post(message.raw, native(message)[len(message.raw):].decode('ascii'))
+                                post(message.raw, frame_v2_events(message)[len(message.raw):].decode('ascii'))
                             else:
-                                post(native(message))
+                                post(frame_v2_events(message))
 
                         assert verifier.db.schema.get(schema) is None
                         if phase == 0:
@@ -269,7 +296,7 @@ def test_dolly_independent_schema_http_arrival_preserves_disclosure(tmp_path, ar
                             # Framing success cannot turn an incomplete section
                             # or a wrong stream genus into schema evidence.
                             for raw, extra in [(schemaMessage.raw[:-1], {}),
-                                    (native(schemaMessage), {'CESR-Genus': '1'})]:
+                                    (frame_v2_events(schemaMessage), {'CESR-Genus': '1'})]:
                                 response = client.simulate_post('/ingest', body=raw,
                                     headers={'Content-Type': CESR_CONTENT_TYPE, **extra})
                                 assert response.status_code == 400
@@ -283,7 +310,7 @@ def test_dolly_independent_schema_http_arrival_preserves_disclosure(tmp_path, ar
                                 plan.append([child.schema['$id'], '/e/member/_/', []])
                             exn, atc = grant(ihab, dhab.pre, 'independent schema disclosure',
                                 origin=signed(partial), artifacts=[signed(child)] if edge else None,
-                                modifiers={'dp': [plan]})
+                                modifiers={'dp': plan})
                             post(exn.raw + atc)
                         if ((arrival != 'before' and phase == 0)
                                 or (arrival == 'restart' and phase == 1)):
@@ -296,12 +323,12 @@ def test_dolly_independent_schema_http_arrival_preserves_disclosure(tmp_path, ar
                         if arrival == 'restart' and phase == 0:
                             continue
                         assert dolly.exc.complete(exn.said)
-                        assert dolly.native.verifyAccepted(exn.said)
+                        assert dolly.acdcV2Ipex.verifyAccepted(exn.said)
                         before = dolly.db.submissions.get((exn.said,)).payload
                         retained = exchanging.loadParsedNestedSubstreams(verifier, exn.said)[0].serder.raw
                         section(sectattr(full.sad['a']))
                         assert sections.messages.get(sectattr(full.sad['a']).said) is not None
-                        assert dolly.native.verifyAccepted(exn.said)
+                        assert dolly.acdcV2Ipex.verifyAccepted(exn.said)
                         assert exchanging.loadParsedNestedSubstreams(verifier, exn.said)[0].serder.raw == retained
                         assert dolly.db.submissions.get((exn.said,)).payload == before
                         doing.Doist(real=True, tock=0.01, limit=0.3).do(
@@ -326,9 +353,8 @@ def test_reopened_dolly_requires_active_observer_observation(tmp_path):
     from falcon import testing
     from keri.acdc.regbasing import RegBaser
     from dolly.serving import DollyBaser
-    from keri.app.registrar.serving import signedQuery
 
-    oldURL, newURL = 'http://observer.old.test/', 'http://observer.new.test/'
+    oldURL, newURL = 'https://observer.old.test/', 'https://observer.new.test/'
     with (openHby(name='dolly-source-issuer', version=Vrsn_2_0) as issuer,
           openHby(name='dolly-source-observer', version=Vrsn_2_0) as observer,
           openHby(name='dolly-source-reader', version=Vrsn_2_0) as verifier):
@@ -339,10 +365,12 @@ def test_reopened_dolly_requires_active_observer_observation(tmp_path):
         blinder = Blinder.blind(acdc=credential.said, state='issued')
         issued = blindate(regid=rip.said, prior=rip.said, blid=blinder.said)
         ihab.interact(data=[dict(s=issued.sad['n'], d=issued.said)])
-        public = ihab.replay(gvrsn=Vrsn_2_0) + native(rip, issued)
-        obs = Observer(observer, readers=[dhab.pre], urls=['http://registrar.test/'])
+        public = ihab.replay(gvrsn=Vrsn_2_0) + frame_v2_events(rip, issued)
+        sourceURL = 'https://registrar.test/'
+        obs = Observer(observer, readers=[dhab.pre],
+                       sources=[observerTrust(sourceURL)])
         obs.ingest(dhab.replay(gvrsn=Vrsn_2_0))
-        assert not obs.observe('http://registrar.test/', public)['rejected']
+        assert not obs.observe(sourceURL, public)['rejected']
         cache = testing.TestClient(obs.app)
         response = cache.simulate_post('/', body=signedQuery(dhab, 'tels', {'i': rip.said}),
                                       headers={'Content-Type': CESR_CONTENT_TYPE})
@@ -352,10 +380,10 @@ def test_reopened_dolly_requires_active_observer_observation(tmp_path):
 
         def context(url):
             """Build the same persistent evidence/submission stores under the selected observer URL."""
-            evidence = Registrar(verifier, reger=RegBaser(name='dolly-source',
+            evidence = EvidenceContext(verifier, reger=RegBaser(name='dolly-source',
                 headDirPath=str(tmp_path), temp=False))
             return Dolly(verifier, dhab, issuers=[ihab.pre], schemas=[credential.schema['$id']],
-                fields={'value': 'a/value'}, observer=url, webhook='http://hook.test/',
+                fields={'value': 'a/value'}, observer=observerTrust(url), webhook='http://hook.test/',
                 evidence=evidence, db=DollyBaser(name='dolly-source', headDirPath=str(tmp_path), temp=False))
 
         dolly = context(oldURL)
@@ -380,9 +408,142 @@ def test_reopened_dolly_requires_active_observer_observation(tmp_path):
             obs.close()
 
 
+@pytest.mark.parametrize('observer, message', [
+    ('https://observer.test/', 'configure url and cafilepath'),
+    ({'url': 'http://observer.test/', 'cafilepath': str(SERVER_TLS)}, 'must be an HTTPS URL'),
+    ({'url': 'https://observer.test/', 'cafilepath': ''}, 'CA bundle'),
+    ({'url': 'https://observer.test/', 'cafilepath': '/missing/dolly-ca.pem'}, 'existing file'),
+    ({'url': 'https://observer.test/', 'cafilepath': str(SERVER_TLS),
+      'certedhost': 'alternate.test'}, 'override requires an IP URL'),
+])
+def test_observer_source_trust_fails_closed_at_configuration(observer, message):
+    """Reject absent trust, plaintext, and absent CA material before opening stores."""
+    with openHby(name='dolly-observer-config', version=Vrsn_2_0) as verifier:
+        dhab = verifier.makeHab(name='dolly')
+        with pytest.raises(ValueError, match=message):
+            Dolly(verifier, dhab, issuers=[], schemas=[], fields={}, observer=observer,
+                  webhook='http://hook.test/')
+
+
+def test_ip_observer_may_use_certificate_ip_identity_without_override():
+    """Leave certedhost unset when an IP URL is expected to match a certificate IP SAN."""
+    with openHby(name='dolly-observer-ip-config', version=Vrsn_2_0) as verifier:
+        dhab = verifier.makeHab(name='dolly')
+        dolly = Dolly(verifier, dhab, issuers=[], schemas=[], fields={},
+            observer=observerTrust('https://127.0.0.1/'), webhook='http://hook.test/')
+        try:
+            assert dolly.observerTrust.certedhost is None
+        finally:
+            dolly.close()
+
+
+@pytest.mark.parametrize('cafilepath, certedhost', [
+    (WRONG_TLS, 'localhost'),
+    (SERVER_TLS, 'wrong-source.test'),
+])
+def test_observer_worker_survives_wrong_ca_or_hostname(cafilepath, certedhost):
+    """Reject copied source bytes at TLS while the same Dolly worker delivers its webhook."""
+    sourceRequests, hooks = [], []
+
+    class Source:
+        def on_post(self, req, rep):
+            sourceRequests.append(bytes(req.bounded_stream.read()))
+            rep.data = b'copied old observer response'
+
+    class Hook:
+        def on_post(self, req, rep):
+            hooks.append(req.media)
+            rep.media = {'received': True}
+
+    sourceApp, hookApp = falcon.App(), falcon.App()
+    sourceApp.add_route('/', Source())
+    hookApp.add_route('/hook', Hook())
+    server = tlsServer(sourceApp)
+    hook = http.Server(servant=tcp.Server(ha=('127.0.0.1', 0)), app=hookApp)
+    assert hook.reopen()
+    hook.servant.eha = hook.servant.ha
+    try:
+        url = f'https://127.0.0.1:{server.servant.ha[1]}/'
+        with openHby(name=f'dolly-wrong-tls-{certedhost}', version=Vrsn_2_0) as verifier:
+            dhab = verifier.makeHab(name='dolly')
+            dolly = Dolly(verifier, dhab, issuers=[], schemas=[], fields={},
+                observer=observerTrust(url, cafilepath=cafilepath, certedhost=certedhost),
+                webhook=f'http://127.0.0.1:{hook.servant.ha[1]}/hook', timeout=0.2)
+            result = []
+
+            def fetch(tymth=None, tock=0.01, **kwa):
+                yield tock
+                result.append((yield from dolly.request(dolly.observer, body=b'query',
+                    trust=dolly.observerTrust)))
+                result.append((yield from dolly.request(dolly.webhook, data={'survived': True})))
+
+            try:
+                doing.Doist(real=True, tock=0.01, limit=0.5).do(doers=[
+                    http.ServerDoer(server=server), http.ServerDoer(server=hook),
+                    dolly, doing.doify(fetch)])
+                assert result[0] is None
+                assert result[1]['status'] == 200
+                assert sourceRequests == []
+                assert hooks == [{'survived': True}]
+            finally:
+                dolly.close()
+    finally:
+        server.close()
+        hook.close()
+
+
+def test_observer_https_accepts_configured_identity_and_rejects_copied_response():
+    """Accept the pinned source, then reject the same bytes behind a different TLS identity."""
+    copied = b'copied old observer response'
+    requests = []
+
+    class Source:
+        def on_post(self, req, rep):
+            requests.append(bytes(req.bounded_stream.read()))
+            rep.data = copied
+
+    def fetch(server, verifier):
+        url = f'https://127.0.0.1:{server.servant.ha[1]}/'
+        dhab = verifier.habByName('dolly') or verifier.makeHab(name='dolly')
+        dolly = Dolly(verifier, dhab, issuers=[], schemas=[], fields={},
+                observer=observerTrust(url, cafilepath=SERVER_TLS, certedhost='localhost'),
+                webhook='http://hook.test/', timeout=0.2)
+        result = []
+
+        def request(tymth=None, tock=0.01, **kwa):
+            yield tock
+            result.append((yield from dolly.request(dolly.observer, body=b'signed query',
+                trust=dolly.observerTrust)))
+
+        try:
+            doing.Doist(real=True, tock=0.01, limit=0.5).do(doers=[
+                http.ServerDoer(server=server), dolly, doing.doify(request)])
+            return result
+        finally:
+            dolly.close()
+
+    app = falcon.App()
+    app.add_route('/', Source())
+    with openHby(name='dolly-source-identity', version=Vrsn_2_0) as verifier:
+        server = tlsServer(app)
+        try:
+            result = fetch(server, verifier)
+            assert len(result) == 1 and bytes(result[0]['body']) == copied
+            assert requests == [b'signed query']
+        finally:
+            server.close()
+
+        impostor = tlsServer(app, certificate=WRONG_TLS)
+        try:
+            assert fetch(impostor, verifier) == [None]
+            assert requests == [b'signed query']
+        finally:
+            impostor.close()
+
+
 @pytest.mark.parametrize('binding', ['top', 'inner', 'oneway'])
 @pytest.mark.parametrize('transport', ['http', 'tcp'])
-def test_native_partial_full_grants_observer_acquisition_and_real_webhooks(binding, transport):
+def test_acdc_v2_partial_full_grants_observer_acquisition_and_real_webhooks(binding, transport):
     """Preserve actual disclosure hooks while the evidence child owns pruning.
 
     Each registry-binding form uses independently acquired observer evidence.
@@ -417,7 +578,7 @@ def test_native_partial_full_grants_observer_acquisition_and_real_webhooks(bindi
         partial = acdcmap(israid=full.israid, regid=full.sad.get('rd'), uuid=full.sad['u'], schema=full.sad['s'],
                          attribute=dict(compact.partials[('a/status/',)].mad))
         assert partial.said == full.said
-        reg = Registrar(registrar, observers=[ohab.pre])
+        reg = registrarContext(registrar, observers=[ohab.pre])
         obs = Observer(observer, readers=[dhab.pre])
         received, observerRequests = [], []
 
@@ -438,21 +599,31 @@ def test_native_partial_full_grants_observer_acquisition_and_real_webhooks(bindi
 
         hookApp = falcon.App()
         hookApp.add_route('/hook', Hook())
-        servers = [http.Server(servant=tcp.Server(ha=('127.0.0.1', 0)), app=app)
-                   for app in (reg.app, obs.app, hookApp)]
+        servers = [
+            http.Server(servant=tcp.ServerTls(host='127.0.0.1', port=0,
+                keypath=str(SERVER_TLS), certpath=str(SERVER_TLS), certify=ssl.CERT_NONE), app=reg.app),
+            http.Server(servant=tcp.ServerTls(host='127.0.0.1', port=0,
+                keypath=str(SERVER_TLS), certpath=str(SERVER_TLS), certify=ssl.CERT_NONE), app=obs.app),
+            http.Server(servant=tcp.Server(ha=('127.0.0.1', 0)), app=hookApp),
+        ]
         dolly = client = rawServer = None
         try:
-            assert not reg.ingest(ihab.replay(gvrsn=Vrsn_2_0) + native(rip, update))['rejected']
+            assert not reg.ingest(ihab.replay(gvrsn=Vrsn_2_0) + frame_v2_events(rip, update))['rejected']
             assert not reg.ingest(ohab.replay(gvrsn=Vrsn_2_0))['rejected']
             assert not obs.ingest(dhab.replay(gvrsn=Vrsn_2_0))['rejected']
             for server in servers:
                 assert server.reopen()
                 server.servant.eha = server.servant.ha
-            urls = [f'http://127.0.0.1:{server.servant.ha[1]}/' for server in servers]
-            obs.urls = frozenset([urls[0]])
+            urls = [f'{"https" if server.secured else "http"}://127.0.0.1:{server.servant.ha[1]}/'
+                    for server in servers]
+            source = SourceTrust.fromConfig(
+                observerTrust(urls[0], certedhost='localhost'))
+            obs.sources = (source,)
+            obs.urls = frozenset([source.url])
             dolly = Dolly(verifier, dhab, issuers=[ihab.pre], schemas=[full.schema['$id']],
                 fields={'status': 'a/status/value', 'private': 'a/private/value', 'note': 'a/note/value'},
-                required=['status'], observer=urls[1], webhook=urls[2] + 'hook')
+                required=['status'], observer=observerTrust(urls[1], certedhost='localhost'),
+                webhook=urls[2] + 'hook')
             ingress = http.Server(servant=tcp.Server(ha=('127.0.0.1', 0)), app=dolly.app)
             assert ingress.reopen()
             ingress.servant.eha = ingress.servant.ha
@@ -482,7 +653,7 @@ def test_native_partial_full_grants_observer_acquisition_and_real_webhooks(bindi
                                    headers={'Content-Type': CESR_CONTENT_TYPE})
 
             send(bytes(stream))
-            puller = RegistrarPuller(ohab, obs, [urls[0]], interval=10, timeout=1)
+            puller = RegistrarPuller(ohab, obs, [source], interval=10, timeout=1)
             doers = [http.ServerDoer(server=server) for server in servers]
             doers.extend([sender, puller, dolly])
             if rawServer:
@@ -628,7 +799,8 @@ def test_legacy_current_source_tsn_and_same_real_webhook_contract(attachmentHead
             sourceURL = f'http://127.0.0.1:{servers[0].servant.ha[1]}/'
             hookURL = f'http://127.0.0.1:{servers[1].servant.ha[1]}/hook'
             dolly = Dolly(verifier, dhab, issuers=[ihab.pre], schemas=[schema.said],
-                fields={'status': 'a/status'}, required=['status'], observer=sourceURL,
+                fields={'status': 'a/status'}, required=['status'], observer=observerTrust(
+                    'https://unused.test/'),
                 legacySources=[ihab.pre], webhook=hookURL)
             verifier.db.schema.pin((schema.said,), schema)
             # Public KEL, registry inception and signed endpoint metadata are
@@ -737,7 +909,7 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
         authority, ihab = issuer.makeHab(name='authority'), issuer.makeHab(name='issuer')
         hhab, ohab, dhab = holder.makeHab(name='holder'), observer.makeHab(name='observer'), verifier.makeHab(name='dolly')
         irgy, hrgy = Regery(hby=issuer, temp=True), Regery(hby=holder, temp=True)
-        irar, hrar = NativeRegistrar(irgy), NativeRegistrar(hrgy)
+        irar, hrar = AcdcV2Registrar(irgy), AcdcV2Registrar(hrgy)
         farReg = irar.makeRegistry(name='authority', prefix=authority.pre)
         nearReg = irar.makeRegistry(name='entitlement', prefix=ihab.pre)
         presentationReg = hrar.makeRegistry(name='presentation', prefix=hhab.pre)
@@ -770,12 +942,13 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
             uuid=full.sad['u'], schema=full.sad['s'], edge=full.sad['e'],
             attribute=dict(compact.partials[('a/entitlement/',)].mad))
         assert partial.said == full.said and isinstance(partial.sad['a']['private'], str)
-        reg, obs = Registrar(registrar, observers=[ohab.pre]), Observer(observer, readers=[dhab.pre])
+        reg = registrarContext(registrar, observers=[ohab.pre])
+        obs = Observer(observer, readers=[dhab.pre])
         sections = SectionBaser(name=holder.name, temp=True)
         hwallet, dwallet = Wallet(holder, hrgy), None
         peer = Peer(holder, hrgy, hwallet, sections)
         public = bytes(authority.replay(gvrsn=Vrsn_2_0) + ihab.replay(gvrsn=Vrsn_2_0)
-                       + hhab.replay(gvrsn=Vrsn_2_0) + native(*rips, farIss, nearIss))
+                       + hhab.replay(gvrsn=Vrsn_2_0) + frame_v2_events(*rips, farIss, nearIss))
         received = []
 
         class Hook:
@@ -788,8 +961,14 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
         holderApp, hookApp = falcon.App(), falcon.App()
         holderApp.add_route('/ingest', Intake(peer))
         hookApp.add_route('/hook', Hook())
-        servers = [http.Server(servant=tcp.Server(ha=('127.0.0.1', 0)), app=app)
-                   for app in (reg.app, obs.app, holderApp, hookApp)]
+        servers = [
+            http.Server(servant=tcp.ServerTls(host='127.0.0.1', port=0,
+                keypath=str(SERVER_TLS), certpath=str(SERVER_TLS), certify=ssl.CERT_NONE), app=reg.app),
+            http.Server(servant=tcp.ServerTls(host='127.0.0.1', port=0,
+                keypath=str(SERVER_TLS), certpath=str(SERVER_TLS), certify=ssl.CERT_NONE), app=obs.app),
+            http.Server(servant=tcp.Server(ha=('127.0.0.1', 0)), app=holderApp),
+            http.Server(servant=tcp.Server(ha=('127.0.0.1', 0)), app=hookApp),
+        ]
         dolly, clients = None, []
         try:
             assert not reg.ingest(public)['rejected']
@@ -799,19 +978,23 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
             for server in servers:
                 assert server.reopen()
                 server.servant.eha = server.servant.ha
-            urls = [f'http://127.0.0.1:{server.servant.ha[1]}/' for server in servers]
-            obs.urls = frozenset([urls[0]])
+            urls = [f'{"https" if server.secured else "http"}://127.0.0.1:{server.servant.ha[1]}/'
+                    for server in servers]
+            source = SourceTrust.fromConfig(
+                observerTrust(urls[0], certedhost='localhost'))
+            obs.sources = (source,)
+            obs.urls = frozenset([source.url])
             dolly = Dolly(verifier, dhab, issuers=[ihab.pre, authority.pre],
                 schemas=[full.schema['$id']], fields={'entitlement': 'a/entitlement/value',
                     'private': 'a/private/value'}, required=['entitlement'],
-                observer=urls[1], webhook=urls[3] + 'hook')
+                observer=observerTrust(urls[1], certedhost='localhost'), webhook=urls[3] + 'hook')
             dwallet = Wallet(verifier, dolly.rgy, exc=dolly.exc)
             ingress = http.Server(servant=tcp.Server(ha=('127.0.0.1', 0)), app=dolly.app)
             assert ingress.reopen()
             ingress.servant.eha = ingress.servant.ha
             servers.append(ingress)
             dollyURL = f'http://127.0.0.1:{ingress.servant.ha[1]}/ingest'
-            puller = RegistrarPuller(ohab, obs, [urls[0]], interval=0.1, timeout=1)
+            puller = RegistrarPuller(ohab, obs, [source], interval=0.1, timeout=1)
             doers = [http.ServerDoer(server=server) for server in servers] + [puller, dolly]
 
             def send(url, raw, duration=0.25):
@@ -826,7 +1009,8 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
                 doing.Doist(real=True, tock=0.01, limit=duration).do(doers=[*doers, owner])
                 assert client.responses and client.responses.popleft()['status'] == 202
 
-            plan = [[[full.schema['$id'], '/', []], [far.schema['$id'], '/e/authority/_/', []]]]
+            plan = [[full.schema['$id'], '/', []],
+                    [far.schema['$id'], '/e/authority/_/', []]]
             application, aatc = apply(dhab, hhab.pre, 'request entitlement chain', modifiers={'dp': plan})
             dolly.ingest(application.raw + aatc)
             send(urls[2] + 'ingest', dhab.replay(gvrsn=Vrsn_2_0) + application.raw + aatc)
@@ -845,18 +1029,22 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
             draft, _ = grant(hhab, dhab.pre, 'present selected entitlement chain',
                 origin=partial, artifacts=[far], agree=agreed, dt=stamp)
             # Commit the already final grant body into the holder's public TEL.
-            presented = update(presentationReg.regk, rips[2].said, draft.said, 'presented')
-            presentationReg.processEvent(presented)
+            # The public bup and the Grant carry the same exact expanded opening.
+            presentationOpening, presented = presentationReg.present(draft)
             source = anchor(hhab, presentationReg, presented)
             proofedNear = messagize(partial, bonds=[nearProof.data,
-                SealEvent(hhab.pre, source.snh, source.said)], gvrsn=Vrsn_2_0)
+                SealEvent(hhab.pre, source.snh, source.said), presentationOpening.data],
+                gvrsn=Vrsn_2_0)
             proofedFar = messagize(far, bonds=[farProof.data], gvrsn=Vrsn_2_0)
             final, fatc = grant(hhab, dhab.pre, 'present selected entitlement chain',
                 origin=proofedNear, artifacts=[proofedFar], agree=agreed, dt=stamp)
             assert final.raw == draft.raw and final.said == draft.said
             peer.ingest(final.raw + fatc)
             assert peer.exc.complete(final.said)
-            assert not reg.ingest(hhab.replay(gvrsn=Vrsn_2_0) + native(presented))['rejected']
+            presentationFrame = presented.raw + Counter.enclose(
+                qb64=Blinder.enclose([presentationOpening]),
+                code=Codens.AttachmentGroup, version=Vrsn_2_0)
+            assert not reg.ingest(hhab.replay(gvrsn=Vrsn_2_0) + presentationFrame)['rejected']
             send(dollyURL, hhab.replay(gvrsn=Vrsn_2_0) + final.raw + fatc, duration=2.5)
             assert dolly.exc.complete(final.said)
             assert len(received) == 1, dolly.db.submissions.get((final.said,))
