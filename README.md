@@ -56,30 +56,20 @@ Historical inspection is the Python API `Context.inspectHistorical(grantSaid)`.
 It reads retained authenticated native evidence, labels standing unevaluated,
 and never emits an acceptance hook or freshness/publication-time claim.
 
-## Linux qualification
+## Component tests and provenance
 
-Run with copied source and named Linux state volumes, without host bind mounts:
+Install the package and its declared dependencies in Python 3.14, then run
+`python -m pytest -q tests`. The retained suite covers verifier policy, historical
+inspection, and actual HTTP/TCP listener/restart behavior. Linux-owned state
+volumes avoid host LMDB limitations. The independent experiment repository owns
+composed images, released-peer environments and operator scenarios.
 
-```sh
-KERI_SOURCE=/absolute/path/to/qualified/keripy scripts/check.sh
-```
+See [source provenance](docs/provenance.md) for module and symbol ancestry.
 
-The script builds and installs actual KERIpy and Dolly wheels. The Docker image
-contains the copied tests; imports resolve to installed packages, not editable
-checkouts. Exact source state and artifact hashes are reported during the build. Released
-1.2.14/1.3.6 peers run in isolated dependency images with pinned source hashes:
+## Experiment ownership
 
-```sh
-DOLLY_MATRIX_IMAGE=dolly-v2-refactor:dev scripts/legacy-peers/check.sh
-```
-
-The [v1 operator walkthrough](scripts/operator/README.md) runs installed KLI
-issuance, apply/offer/agree/grant/admit and revocation against independent Dolly
-HTTP/TCP listeners and real hooks, with three witnesses and quorum two.
-
-The qualification scripts do not call KERIpy's qualification wrapper, avoiding a
-cross-repository invocation cycle. See [provenance](docs/provenance.md) for exact
-module and symbol ancestry.
-
-The [clean qualification report](docs/qualification-2026-10-21.md) records the
-exact tested source pair, standalone/peer results, and public v1 operator evidence.
+Cross-repository recipes, external acceptance scenarios and dated evidence are
+owned by the independent `keri-v2` experiment repository. They are not required
+to run this component. [Pre-extraction record](https://github.com/kentbull/dolly/blob/a48799219a45aeb3e3a0414888a0aae8dbce2851/README.md) preserves the
+historical source and execution scope. The extraction changes ownership only;
+runtime dependencies and verification contracts remain unchanged.
