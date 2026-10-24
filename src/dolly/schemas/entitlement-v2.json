@@ -1,0 +1,1 @@
+{"$id":"ECvpa-9mzR_3885DT1t433bbU03lroP2Wkxt6p4SzwFe","$schema":"https://json-schema.org/draft/2020-12/schema","version":"1.0.0","title":"Dolly non-vLEI entitlement fixture","type":"object","properties":{"a":{"type":"object","properties":{"entitlement":{"type":"string"}},"required":["entitlement"]}},"required":["a"]}
