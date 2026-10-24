@@ -11,3 +11,12 @@ Detailed operator guides, qualification records and lineage ledgers belong to
 the independent `keri-v2` experiment workspace. In-code attribution and LICENSE /
 NOTICE remain here. This package makes no universal conformance or production
 readiness claim.
+
+Current-standing acquisition requires explicit HTTPS observer trust in the
+JSON policy. Configure `observer` as `{"url": "https://observer.example/",
+"cafilepath": "/absolute/path/to/observer-ca.pem"}`. When the URL connects by
+IP to a certificate issued for a DNS name, add `"certedhost":
+"observer.example"`. Dolly rejects plaintext or missing observer trust and does
+not follow observer redirects. This authenticates the configured response hop;
+local KERI/ACDC proof and freshness validation still determine standing, and no
+observation is a global-latest claim.

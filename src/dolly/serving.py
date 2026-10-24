@@ -4,7 +4,9 @@ Composition informed by Sally ed789de (Apache-2.0); cryptographic verification
 remains in Exchanger, ACDC v2 IPEX/Rever, and legacy Tevery/Verifier.
 """
 from dataclasses import asdict, dataclass, field
+import ipaddress
 import math
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import falcon
@@ -16,10 +18,13 @@ from keri.acdc import Regery
 from keri.acdc.regeventing import issuerRegistry, vetBlind, vetBound
 from keri.acdc.sectioning import SectionBaser, Sectioner
 from keri.app import ipexing, agenting
+from dolly.netting import (
+    MAX_OUTBOUND_REQUESTS_PER_TURN, MAX_SUBMISSIONS,
+    OUTBOUND_RETRY_INITIAL, OUTBOUND_RETRY_MAXIMUM,
+    boundedHttpServer, clientLimits, tcpServerLimits)
 from dolly.projecting import project
 from keri.app.httping import CESR_CONTENT_TYPE, CESR_ATTACHMENT_HEADER
-from keri.app.indirecting import createHttpServer
-from keri.app.registrar.serving import Context as EvidenceContext, signedQuery, KEL_DEPENDENCIES
+from keri.app.evidencing import EvidenceContext, KEL_DEPENDENCIES, signedQuery
 from keri.core import Parser, SerderACDC, SerderKERI, Serdery, GenDex, Revery, BoundState, Diger
 from keri.db import dbing, koming
 from keri.db.basing import BaserDoer
@@ -53,6 +58,57 @@ class Observation:
     observed: str
     head: str
     observer: str
+
+
+@dataclass(frozen=True)
+class SourceTrust:
+    """Bind one observer URL to the CA and certificate identity Dolly trusts.
+
+    The URL is retained as the observation-source identity. ``cafilepath`` is
+    an explicit PEM CA bundle; ``certedhost`` overrides TLS hostname checking
+    when the URL connects to an IP address.
+    """
+    url: str
+    cafilepath: str
+    certedhost: str | None = None
+
+    @classmethod
+    def fromConfig(cls, value):
+        """Return a strictly validated configured HTTPS observer trust anchor."""
+        if not isinstance(value, dict):
+            raise ValueError('Dolly observer must configure url and cafilepath')
+        unknown = set(value) - {'url', 'cafilepath', 'certedhost'}
+        if unknown:
+            raise ValueError(f'unknown Dolly observer trust fields: {sorted(unknown)}')
+        url, cafilepath = value.get('url'), value.get('cafilepath')
+        certedhost = value.get('certedhost')
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError('Dolly observer URL must be a non-empty string')
+        if not isinstance(cafilepath, str) or not cafilepath.strip():
+            raise ValueError('Dolly observer CA bundle must be a non-empty path')
+        if certedhost is not None and (not isinstance(certedhost, str) or not certedhost.strip()):
+            raise ValueError('Dolly observer certificate hostname must be a non-empty string')
+        url, capath = url.strip(), Path(cafilepath).expanduser()
+        if not capath.is_absolute():
+            raise ValueError('Dolly observer CA bundle path must be absolute')
+        cafilepath = str(capath.resolve())
+        certedhost = certedhost.strip() if certedhost is not None else None
+        try:
+            target = urlsplit(url)
+            target.port  # Force validation of a malformed explicit port.
+        except ValueError as error:
+            raise ValueError('Dolly observer URL is invalid') from error
+        if (target.scheme != 'https' or not target.hostname or target.username is not None
+                or target.password is not None or target.query or target.fragment):
+            raise ValueError('Dolly observer must be an HTTPS URL without credentials, query, or fragment')
+        if not Path(cafilepath).is_file():
+            raise ValueError('Dolly observer CA bundle must be an existing file')
+        try:
+            ipaddress.ip_address(target.hostname)
+        except ValueError:
+            if certedhost is not None:
+                raise ValueError('Dolly observer certificate hostname override requires an IP URL')
+        return cls(url=url, cafilepath=cafilepath, certedhost=certedhost)
 
 
 @dataclass
@@ -97,6 +153,39 @@ class Notices:
         pass
 
 
+class SourceClientDoer(http.clienting.ClientDoer):
+    """Contain source transport failures without converting them into evidence."""
+    def __init__(self, client, **kwa):
+        super().__init__(client, **kwa)
+        self.error = None
+
+    def recur(self, tyme):
+        """Service once, retaining only socket/TLS failures for the requester."""
+        try:
+            return super().recur(tyme)
+        except OSError as error:
+            self.error = error
+            return True
+
+
+def rotated(items, cursor, limit, *, key=lambda item: item):
+    """Select a deterministic bounded slice after the prior turn's cursor.
+
+    The cursor is intentionally session-local. Durable queue rows remain the
+    source of truth across restart, while every live session eventually wraps
+    through candidates that remain eligible.
+    """
+    ordered = sorted(items, key=key)
+    if not ordered or limit <= 0:
+        return [], cursor
+    start = 0
+    if cursor is not None:
+        start = next((index for index, item in enumerate(ordered)
+                      if key(item) > cursor), 0)
+    selected = (ordered[start:] + ordered[:start])[:limit]
+    return selected, key(selected[-1])
+
+
 class Context(doing.DoDoer):
     """Compose core verification with explicit reporting, projection, and delivery.
 
@@ -109,8 +198,9 @@ class Context(doing.DoDoer):
         """Compose verification, section evidence, reporting, and delivery owners.
 
         ``hby`` and ``hab`` supply the identity; issuers/schemas and field paths
-        define reporting policy. Observer/webhook URLs and positive finite
-        maximumAge/timeout configure evidence freshness and HTTP delivery.
+        define reporting policy. ``observer`` supplies its HTTPS URL, explicit
+        CA bundle, and optional expected certificate hostname. Webhook URL and
+        positive finite maximumAge/timeout configure delivery and freshness.
         Optional db/evidence/legacy/sections stores support persistent reopen;
         this context closes them. The shared SectionBaser feeds parser intake
         and graphPolicy-aware ACDC v2 IPEX verification, without expanding retained
@@ -120,11 +210,14 @@ class Context(doing.DoDoer):
         """
         if any(not math.isfinite(value) or value <= 0 for value in (maximumAge, timeout)):
             raise ValueError('Dolly freshness and request timeouts must be finite and positive')
+        self.observerTrust = SourceTrust.fromConfig(observer)
         self.hby, self.hab = hby, hab
         self.issuers, self.schemas = set(issuers), set(schemas)
         self.fields, self.required = dict(fields), tuple(required)
-        self.observer, self.webhook = observer, webhook
+        self.observer, self.webhook = self.observerTrust.url, webhook
         self.maximumAge, self.timeout = maximumAge, timeout
+        self._deliveryFailures, self._deliveryRetry = {}, {}
+        self._registryCursor = self._deliveryCursor = None
         self.legacySources = tuple(legacySources)
         self.db = db if db is not None else DollyBaser(name=hby.name, base=hby.base, temp=hby.temp)
         self.evidence = evidence if evidence is not None else EvidenceContext(hby)
@@ -207,6 +300,9 @@ class Context(doing.DoDoer):
                                  if (regid := issuerRegistry(item['serder']))})
             submission = Submission(serder.said, registries)
             submitted = serder.said
+            if (self.db.submissions.get((submitted,)) is None
+                    and self.db.submissions.cnt() >= MAX_SUBMISSIONS):
+                raise ValidationError('Dolly submission queue is full')
         try:
             Parser.msgProcess(parser, exts, kvy=self.evidence.kvy, rgy=self.evidence.rever,
                 tvy=self.legacy.tvy, vry=self.legacy, exc=self.exc, rvy=self.rvy, scy=self.scy)
@@ -522,24 +618,28 @@ class Context(doing.DoDoer):
                 record.state, record.reason = 'rejected', str(error)
             self.db.submissions.pin(keys, record)
 
-    def request(self, url, *, body=None, data=None):
+    def request(self, url, *, body=None, data=None, trust=None):
         """Send one bounded CESR-evidence or JSON-webhook POST and yield while waiting.
 
         url selects the endpoint; body is raw CESR and data is a JSON payload.
+        ``trust`` supplies observer-only CA and certificate-hostname validation.
         Return the actual HTTP response, or None on timeout. The client/doer is
         removed and closed even on cancellation; response status determines the
         caller's observation or delivery decision."""
         target = urlsplit(url)
+        tls = ({'cafilepath': trust.cafilepath, 'certedhost': trust.certedhost}
+               if trust is not None else {})
         client = http.clienting.Client(scheme=target.scheme, hostname=target.hostname,
-            port=target.port or (443 if target.scheme == 'https' else 80))
-        doer = http.clienting.ClientDoer(client)
+            port=target.port or (443 if target.scheme == 'https' else 80),
+            redirectable=trust is None, **clientLimits(), **tls)
+        doer = SourceClientDoer(client) if trust is not None else http.clienting.ClientDoer(client)
         self.clients.add(client)
         self.extend([doer])
         try:
             client.request(method='POST', path=target.path or '/', body=body, data=data,
                 headers={'Content-Type': CESR_CONTENT_TYPE if body is not None else 'application/json'})
             deadline = self.tyme + self.timeout
-            while not client.responses and self.tyme < deadline:
+            while not client.responses and getattr(doer, 'error', None) is None and self.tyme < deadline:
                 yield self.tock
             return client.responses.popleft() if client.responses else None
         finally:
@@ -558,6 +658,14 @@ class Context(doing.DoDoer):
         self.wind(tymth)
         yield tock
         while True:
+            now = self.tyme
+            waitingDelivery = any(
+                record.state == 'accepted' and not record.delivered
+                and now >= self._deliveryRetry.get(record.grant, 0)
+                for _, record in self.db.submissions.getTopItemIter())
+            registryBudget = (MAX_OUTBOUND_REQUESTS_PER_TURN // 2
+                              if waitingDelivery
+                              else MAX_OUTBOUND_REQUESTS_PER_TURN)
             registries = set()
             for _, record in self.db.submissions.getTopItemIter():
                 if record.state != 'pending':
@@ -583,18 +691,50 @@ class Context(doing.DoDoer):
                     registries.update(pre.qb64 for pre, _, _ in nest.ssts
                         if pre.qb64 != nest.serder.israid and pre.qb64 not in self.hby.kevers
                         and not self.fresh(pre.qb64))
-            for regid in sorted(registries):
-                response = yield from self.request(self.observer,
-                    body=signedQuery(self.hab, 'tels', {'i': regid}))
+            selected, self._registryCursor = rotated(
+                registries, self._registryCursor,
+                registryBudget)
+            outbound = 0
+            for regid in selected:
+                try:
+                    response = yield from self.request(self.observer,
+                        body=signedQuery(self.hab, 'tels', {'i': regid}), trust=self.observerTrust)
+                except OSError:
+                    response = None
                 if response is not None:
                     self.observe(regid, response)
+                outbound += 1
+                if outbound >= MAX_OUTBOUND_REQUESTS_PER_TURN:
+                    break
             self.process()
-            for keys, record in self.db.submissions.getTopItemIter():
-                if record.state == 'accepted' and not record.delivered:
-                    response = yield from self.request(self.webhook, data=record.payload)
-                    if response is not None and 200 <= response['status'] < 300:
-                        record.delivered = True
-                        self.db.submissions.pin(keys, record)
+            now = self.tyme
+            deliveries = [(keys, record)
+                          for keys, record in self.db.submissions.getTopItemIter()
+                          if (record.state == 'accepted' and not record.delivered
+                              and now >= self._deliveryRetry.get(record.grant, 0))]
+            selected, self._deliveryCursor = rotated(
+                deliveries, self._deliveryCursor,
+                MAX_OUTBOUND_REQUESTS_PER_TURN - outbound,
+                key=lambda item: item[1].grant)
+            for keys, record in selected:
+                try:
+                    response = yield from self.request(
+                        self.webhook, data=record.payload)
+                except OSError:
+                    response = None
+                if response is not None and 200 <= response['status'] < 300:
+                    record.delivered = True
+                    self.db.submissions.pin(keys, record)
+                    self._deliveryFailures.pop(record.grant, None)
+                    self._deliveryRetry.pop(record.grant, None)
+                else:
+                    failures = self._deliveryFailures.get(record.grant, 0) + 1
+                    self._deliveryFailures[record.grant] = failures
+                    exponent = min(failures - 1, 6)
+                    delay = min(OUTBOUND_RETRY_INITIAL * (2 ** exponent),
+                                OUTBOUND_RETRY_MAXIMUM)
+                    self._deliveryRetry[record.grant] = self.tyme + delay
+                outbound += 1
             # Ordinary application retry; no distributed exactly-once promise.
             started = self.tyme
             while self.tyme < started + 1.0:
@@ -808,11 +948,11 @@ def setup(hby, hab, *, host='127.0.0.1', port=6644, tcpPort=None,
     doers = [BaserDoer(baser=context.db), BaserDoer(baser=context.evidence.reger),
              BaserDoer(baser=context.legacy.reger), BaserDoer(baser=context.sections), context]
     if port is not None:
-        server = createHttpServer(host=host, port=port, app=context.app,
+        server = boundedHttpServer(host=host, port=port, app=context.app,
                                  keypath=keypath, certpath=certpath, cafilepath=cafilepath)
         doers.append(http.ServerDoer(server=server))
     if tcpPort is not None:
-        server = tcp.Server(ha=(host, tcpPort))
+        server = tcp.Server(ha=(host, tcpPort), **tcpServerLimits())
         if not server.reopen():
             raise OSError('cannot open Dolly TCP listener')
         server.eha = server.ha
