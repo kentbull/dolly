@@ -26,6 +26,14 @@ from keri.app.habbing import openHby
 from keri.core import Diger, Number, messagize
 
 
+SERVER_TLS = Path(__file__).with_name('tls') / 'server.pem'
+
+
+def observerTrust(url='https://unused.test/'):
+    """Return explicit HTTPS trust for tests whose observer path stays idle."""
+    return dict(url=url, cafilepath=str(SERVER_TLS))
+
+
 def signed(credential, hab):
     """Attach real current-establishment issuer signatures to exact credential bytes.
 
@@ -34,7 +42,7 @@ def signed(credential, hab):
         hab (Hab): Issuer habitat with the matching current signing keys.
 
     Returns:
-        bytearray: Native node stream with its transferable signature group, using
+        bytearray: ACDC v2 credential node stream with its transferable signature group, using
         production messagize and no imports from KERIpy protocol test fixtures."""
     return messagize(credential, tsgs=[(hab.kever.prefixer,
         Number(sn=hab.kever.lastEst.s), Diger(qb64=hab.kever.lastEst.d),
@@ -84,7 +92,7 @@ def test_tcp_fragmented_consecutive_and_malformed_connections_are_isolated():
                              attribute=dict(d='', entitlement='read'))
         dolly = Context(reader, verifier, issuers=[issuer.pre], schemas=[schema.said],
             fields={'entitlement': 'a/entitlement'}, required=['entitlement'],
-            observer='http://unused.test/', webhook=f'http://127.0.0.1:{hook.servant.ha[1]}/hook')
+            observer=observerTrust(), webhook=f'http://127.0.0.1:{hook.servant.ha[1]}/hook')
         try:
             grants = [grant(issuer, verifier.pre, f'connection {index}',
                             origin=signed(credential, issuer)) for index in range(3)]
@@ -192,7 +200,7 @@ def test_installed_wheel_dual_listener_start_stop_restart_and_local_inspect(tmp_
         policy = tmp_path / 'policy.json'
         policy.write_text(json.dumps(dict(issuers=[issuer.pre], schemas=[schema.said],
             fields={'entitlement': 'a/entitlement'}, required=['entitlement'],
-            observer='http://unused.test/', webhook=f'http://127.0.0.1:{hook.server_port}/hook')))
+            observer=observerTrust(), webhook=f'http://127.0.0.1:{hook.server_port}/hook')))
         httpPort, tcpPort = freePort(), freePort()
         executable = shutil.which('dolly')
         auth = ['--name', name, '--passcode', passcode, '--no-prompt']
