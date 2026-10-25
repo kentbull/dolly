@@ -7,6 +7,7 @@ disclosure, actual webhook silence, and reopen without replay.
 from copy import deepcopy
 from dataclasses import asdict
 import json
+from pathlib import Path
 
 import falcon
 from falcon import testing
@@ -19,18 +20,26 @@ from keri.acdc import Regery, Registrar, acdcmap, blindate, grant, sectattr
 from keri.acdc.regbasing import RegBaser
 from keri.acdc.sectioning import SectionBaser
 from dolly.serving import Context as Dolly, DollyBaser
+from keri.app.evidencing import EvidenceContext, signedQuery
 from keri.app.habbing import openHby
 from keri.app.httping import CESR_CONTENT_TYPE
-from keri.app.observer.serving import Context as Observer
-from keri.app.registrar.serving import Context as Evidence, signedQuery
 from keri.core import Blinder, Codens, Compactor, Counter, Diger, Noncer, Number, SealSource, messagize
 from keri.kering import MissingChainError, ValidationError
 from keri.peer import exchanging
 from keri.vdr import eventing as legacy, verifying
+from kfobserver.core.evidence import Context as Observer
 
 
-def native(*events):
-    """Frame public native messages with explicit empty attachment groups."""
+SERVER_TLS = Path(__file__).with_name('tls') / 'server.pem'
+
+
+def observerTrust(url):
+    """Return explicit source trust for historical-mode contexts."""
+    return dict(url=url, cafilepath=str(SERVER_TLS))
+
+
+def frame_v2_events(*events):
+    """Frame public ACDC v2 messages with explicit empty attachment groups."""
     foot = Counter(Codens.AttachmentGroup, count=0, version=Vrsn_2_0).qb64b
     return b''.join(event.raw + foot for event in events)
 
@@ -100,11 +109,11 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                 nearSource = SealSource(Number(num=issuer.kever.sn), Diger(qb64=issuer.kever.serder.said))
                 revoked, revokeEvent = publish('revoked')
                 public = authority.replay(gvrsn=Vrsn_2_0) + issuer.replay(gvrsn=Vrsn_2_0)
-                public += native(rip, issueEvent, revokeEvent)
+                public += frame_v2_events(rip, issueEvent, revokeEvent)
                 proofNear = messagize(near, bonds=[nearSource], framed=False, gvrsn=Vrsn_2_0)
                 proofFar = messagize(far, bonds=[issued.data, revoked.data], framed=False, gvrsn=Vrsn_2_0)
-                plan = {'dp': [[[near.schema['$id'], '/', []],
-                                [far.schema['$id'], '/e/authority/_/', []]]]}
+                plan = {'dp': [[near.schema['$id'], '/', []],
+                               [far.schema['$id'], '/e/authority/_/', []]]}
                 expected = None
                 for phase in range(2):
                     with openHby(name='historical-dolly', temp=False,
@@ -113,9 +122,9 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                         dolly = Dolly(verifier, dhab, issuers=[issuer.pre, authority.pre],
                             schemas=[near.schema['$id']], fields={'shown': 'a/shown/value',
                             'private': 'a/private/value'}, required=['shown'],
-                            observer=f'http://observer-{phase}.test/', webhook=hook,
+                            observer=observerTrust(f'https://observer-{phase}.test/'), webhook=hook,
                             db=DollyBaser(name=verifier.name, headDirPath=str(tmp_path), temp=False),
-                            evidence=Evidence(verifier, reger=RegBaser(name=verifier.name,
+                            evidence=EvidenceContext(verifier, reger=RegBaser(name=verifier.name,
                                 headDirPath=str(tmp_path), temp=False)),
                             legacy=verifying.Verifier(verifier, reger=legacy.Reger(name=verifier.name,
                                 headDirPath=str(tmp_path), temp=False)),
@@ -126,7 +135,7 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                                 exn, atc = grant(issuer, dhab.pre, 'historical bound graph',
                                     origin=proofNear, artifacts=[proofFar], modifiers=plan)
                                 assert dolly.ingest(exn.raw + atc) == [dict(grant=exn.said, state='pending')]
-                            assert dolly.native.verifyAccepted(exn.said)
+                            assert dolly.acdcV2Ipex.verifyAccepted(exn.said)
                             assert not dolly.fresh(registry.regk)
                             before = asdict(dolly.db.submissions.get((exn.said,)))
                             inspected = dolly.inspectHistorical(exn.said)
@@ -148,10 +157,12 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                                     for proof, event in [(issued, issueEvent), (revoked, revokeEvent)]])
                             if phase == 0:
                                 expected = inspected
-                                obs = Observer(observer, readers=[dhab.pre], urls=['http://registrar.test/'])
+                                sourceURL = 'https://registrar.test/'
+                                obs = Observer(observer, readers=[dhab.pre],
+                                    sources=[observerTrust(sourceURL)])
                                 try:
                                     obs.ingest(dhab.replay(gvrsn=Vrsn_2_0))
-                                    assert not obs.observe('http://registrar.test/', public)['rejected']
+                                    assert not obs.observe(sourceURL, public)['rejected']
                                     response = testing.TestClient(obs.app).simulate_post('/',
                                         body=signedQuery(dhab, 'tels', {'i': registry.regk}),
                                         headers={'Content-Type': CESR_CONTENT_TYPE})
@@ -178,12 +189,12 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                             else:
                                 assert inspected == expected  # No KEL/TEL/grant replay on reopen.
                                 with pytest.raises(MissingChainError, match='observer evidence'):
-                                    dolly._nativeCredential(exn)
+                                    dolly._acdcV2GrantCredential(exn)
                             with pytest.raises(ValidationError, match='proof or semantics'):
                                 dolly.inspectHistorical(invalid.said)
                             assert dolly.db.submissions.get((invalid.said,)) is None
                             # Fuller cached evidence cannot widen historical inspection.
-                            dolly.ingest(native(sectattr(full.sad['a'])))
+                            dolly.ingest(frame_v2_events(sectattr(full.sad['a'])))
                             assert dolly.inspectHistorical(exn.said) == expected
                             doing.Doist(real=True, tock=0.01, limit=0.2).do(
                                 doers=[http.ServerDoer(server=server), dolly])

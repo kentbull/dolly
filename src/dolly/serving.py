@@ -1,10 +1,12 @@
-"""Sally-like application policy over native and legacy KERIpy verification.
+"""Sally-like application policy over ACDC v2 and v1 KERIpy verification.
 
 Composition informed by Sally ed789de (Apache-2.0); cryptographic verification
-remains in Exchanger, native IPEX/Rever, and legacy Tevery/Verifier.
+remains in Exchanger, ACDC v2 IPEX/Rever, and legacy Tevery/Verifier.
 """
 from dataclasses import asdict, dataclass, field
+import ipaddress
 import math
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import falcon
@@ -16,10 +18,10 @@ from keri.acdc import Regery
 from keri.acdc.regeventing import issuerRegistry, vetBlind, vetBound
 from keri.acdc.sectioning import SectionBaser, Sectioner
 from keri.app import ipexing, agenting
+from keri.app.indirecting import createHttpServer
 from dolly.projecting import project
 from keri.app.httping import CESR_CONTENT_TYPE, CESR_ATTACHMENT_HEADER
-from keri.app.indirecting import createHttpServer
-from keri.app.registrar.serving import Context as EvidenceContext, signedQuery, KEL_DEPENDENCIES
+from keri.app.evidencing import EvidenceContext, KEL_DEPENDENCIES, signedQuery
 from keri.core import Parser, SerderACDC, SerderKERI, Serdery, GenDex, Revery, BoundState, Diger
 from keri.db import dbing, koming
 from keri.db.basing import BaserDoer
@@ -28,6 +30,11 @@ from keri.kering import (ValidationError, ExtractionError, ShortageError, Missin
                          MissingRegistryError, MissingAnchorError, MissingSenderKeyStateError)
 from keri.peer import exchanging
 from keri.vdr import verifying, eventing as legacyEventing
+
+
+MAX_OUTBOUND_REQUESTS_PER_TURN = 8
+OUTBOUND_RETRY_INITIAL = 5.0
+OUTBOUND_RETRY_MAXIMUM = 300.0
 
 
 @dataclass
@@ -53,6 +60,57 @@ class Observation:
     observed: str
     head: str
     observer: str
+
+
+@dataclass(frozen=True)
+class SourceTrust:
+    """Bind one observer URL to the CA and certificate identity Dolly trusts.
+
+    The URL is retained as the observation-source identity. ``cafilepath`` is
+    an explicit PEM CA bundle; ``certedhost`` overrides TLS hostname checking
+    when the URL connects to an IP address.
+    """
+    url: str
+    cafilepath: str
+    certedhost: str | None = None
+
+    @classmethod
+    def fromConfig(cls, value):
+        """Return a strictly validated configured HTTPS observer trust anchor."""
+        if not isinstance(value, dict):
+            raise ValueError('Dolly observer must configure url and cafilepath')
+        unknown = set(value) - {'url', 'cafilepath', 'certedhost'}
+        if unknown:
+            raise ValueError(f'unknown Dolly observer trust fields: {sorted(unknown)}')
+        url, cafilepath = value.get('url'), value.get('cafilepath')
+        certedhost = value.get('certedhost')
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError('Dolly observer URL must be a non-empty string')
+        if not isinstance(cafilepath, str) or not cafilepath.strip():
+            raise ValueError('Dolly observer CA bundle must be a non-empty path')
+        if certedhost is not None and (not isinstance(certedhost, str) or not certedhost.strip()):
+            raise ValueError('Dolly observer certificate hostname must be a non-empty string')
+        url, capath = url.strip(), Path(cafilepath).expanduser()
+        if not capath.is_absolute():
+            raise ValueError('Dolly observer CA bundle path must be absolute')
+        cafilepath = str(capath.resolve())
+        certedhost = certedhost.strip() if certedhost is not None else None
+        try:
+            target = urlsplit(url)
+            target.port  # Force validation of a malformed explicit port.
+        except ValueError as error:
+            raise ValueError('Dolly observer URL is invalid') from error
+        if (target.scheme != 'https' or not target.hostname or target.username is not None
+                or target.password is not None or target.query or target.fragment):
+            raise ValueError('Dolly observer must be an HTTPS URL without credentials, query, or fragment')
+        if not Path(cafilepath).is_file():
+            raise ValueError('Dolly observer CA bundle must be an existing file')
+        try:
+            ipaddress.ip_address(target.hostname)
+        except ValueError:
+            if certedhost is not None:
+                raise ValueError('Dolly observer certificate hostname override requires an IP URL')
+        return cls(url=url, cafilepath=cafilepath, certedhost=certedhost)
 
 
 @dataclass
@@ -97,6 +155,39 @@ class Notices:
         pass
 
 
+class SourceClientDoer(http.clienting.ClientDoer):
+    """Contain source transport failures without converting them into evidence."""
+    def __init__(self, client, **kwa):
+        super().__init__(client, **kwa)
+        self.error = None
+
+    def recur(self, tyme):
+        """Service once, retaining only socket/TLS failures for the requester."""
+        try:
+            return super().recur(tyme)
+        except OSError as error:
+            self.error = error
+            return True
+
+
+def rotated(items, cursor, limit, *, key=lambda item: item):
+    """Select a deterministic bounded slice after the prior turn's cursor.
+
+    The cursor is intentionally session-local. Durable queue rows remain the
+    source of truth across restart, while every live session eventually wraps
+    through candidates that remain eligible.
+    """
+    ordered = sorted(items, key=key)
+    if not ordered or limit <= 0:
+        return [], cursor
+    start = 0
+    if cursor is not None:
+        start = next((index for index, item in enumerate(ordered)
+                      if key(item) > cursor), 0)
+    selected = (ordered[start:] + ordered[:start])[:limit]
+    return selected, key(selected[-1])
+
+
 class Context(doing.DoDoer):
     """Compose core verification with explicit reporting, projection, and delivery.
 
@@ -109,22 +200,26 @@ class Context(doing.DoDoer):
         """Compose verification, section evidence, reporting, and delivery owners.
 
         ``hby`` and ``hab`` supply the identity; issuers/schemas and field paths
-        define reporting policy. Observer/webhook URLs and positive finite
-        maximumAge/timeout configure evidence freshness and HTTP delivery.
+        define reporting policy. ``observer`` supplies its HTTPS URL, explicit
+        CA bundle, and optional expected certificate hostname. Webhook URL and
+        positive finite maximumAge/timeout configure delivery and freshness.
         Optional db/evidence/legacy/sections stores support persistent reopen;
         this context closes them. The shared SectionBaser feeds parser intake
-        and graphPolicy-aware native verification, without expanding retained
+        and graphPolicy-aware ACDC v2 IPEX verification, without expanding retained
         credential projections. EvidenceContext is scheduled once as a child,
         owning its single KRAM pruner until cancellation. Invalid timeouts
         raise ValueError.
         """
         if any(not math.isfinite(value) or value <= 0 for value in (maximumAge, timeout)):
             raise ValueError('Dolly freshness and request timeouts must be finite and positive')
+        self.observerTrust = SourceTrust.fromConfig(observer)
         self.hby, self.hab = hby, hab
         self.issuers, self.schemas = set(issuers), set(schemas)
         self.fields, self.required = dict(fields), tuple(required)
-        self.observer, self.webhook = observer, webhook
+        self.observer, self.webhook = self.observerTrust.url, webhook
         self.maximumAge, self.timeout = maximumAge, timeout
+        self._deliveryFailures, self._deliveryRetry = {}, {}
+        self._registryCursor = self._deliveryCursor = None
         self.legacySources = tuple(legacySources)
         self.db = db if db is not None else DollyBaser(name=hby.name, base=hby.base, temp=hby.temp)
         self.evidence = evidence if evidence is not None else EvidenceContext(hby)
@@ -143,7 +238,7 @@ class Context(doing.DoDoer):
         self.scy = Sectioner(db=hby.db, sections=self.sections)
         ipexing.loadHandlers(hby, self.exc, Notices(), self.rgy,
                             graphPolicy=graphPolicy, sections=self.sections)
-        self.native = self.exc.routes['/ipex/grant'].native
+        self.acdcV2Ipex = self.exc.routes['/ipex/grant'].acdcV2
         self.app = falcon.App()
         self.app.add_route('/ingest', IntakeEnd(self))
         self.app.add_route('/', IntakeEnd(self))
@@ -169,7 +264,7 @@ class Context(doing.DoDoer):
 
         ``raw`` may contain consecutive KEL, registry, credential, section, or
         EXN frames. ``version`` selects the initial stream genus. Independent
-        schema sections enter the same store used for live and retained native
+        schema sections enter the same store used for live and retained ACDC v2 IPEX
         verification; they never replace the grant's revealed view. Incomplete
         framing or invalid evidence raises ValidationError; concrete processor
         escrows retain retryable dependencies. HTTP success means intake only.
@@ -267,30 +362,30 @@ class Context(doing.DoDoer):
         self.db.observed.pin((regid,), Observation(stamp, head, self.observer))
         return True
 
-    def _nativeCredential(self, exn):
+    def _acdcV2GrantCredential(self, exn):
         """Return the retained origin credential, or None for an empty grant.
 
-        ``exn`` is the accepted native grant. Revalidate its proof and semantics
+        ``exn`` is the accepted ACDC v2 IPEX grant. Revalidate its proof and semantics
         before making any application decision, then apply current standing to
         every disclosed node. Missing evidence remains retryable; invalid proof
         or current standing raises ValidationError. Selection never resolves a
         fuller cached disclosure in place of this grant's retained material.
         """
-        credential, nests = self._nativeDisclosure(exn)
+        credential, nests = self._acdcV2GrantDisclosure(exn)
         if credential is not None:
-            self._nativeCurrentStanding(nests)
+            self._acdcV2CurrentStanding(nests)
         return credential
 
-    def _nativeDisclosure(self, exn):
+    def _acdcV2GrantDisclosure(self, exn):
         """Return the core-verified retained origin and its disclosed graph nodes.
 
-        ``exn`` must name a retained native grant. Empty disclosures return
+        ``exn`` must name a retained ACDC v2 IPEX grant. Empty disclosures return
         (None, []). Invalid semantics/proofs raise ValidationError; unavailable
         dependencies retain their core exception. This boundary applies no
         Dolly current-reporting or observation policy and never expands a view.
         """
-        if not self.native.verifyAccepted(exn.said):
-            raise ValidationError('native IPEX proof or semantics failed')
+        if not self.acdcV2Ipex.verifyAccepted(exn.said):
+            raise ValidationError('ACDC v2 IPEX proof or semantics failed')
         origins = exn.sad['a']['o']
         if not origins:
             return None, []
@@ -298,7 +393,7 @@ class Context(doing.DoDoer):
         return next(nest.serder for nest in nests if nest.serder.said == origins[0]), nests
 
     def inspectHistorical(self, grant):
-        """Inspect a retained authenticated native grant without reporting it.
+        """Inspect a retained authenticated ACDC v2 IPEX grant without reporting it.
 
         ``grant`` is its EXN SAID. Return selected retained values, disclosure
         facts, exact view references and authenticated bound-event references.
@@ -308,14 +403,14 @@ class Context(doing.DoDoer):
         acceptance, timestamp, or hook. Reporting allowlists and required fields
         apply to current reporting; inspection uses only configured field paths.
 
-        Unknown/non-native grants or invalid proofs raise ValidationError;
+        Unknown or non-ACDC-v2 grants or invalid proofs raise ValidationError;
         unavailable dependencies retain their core exception. Core graph proof
         verification remains authoritative, including its configured graphPolicy.
         """
         exn = self.hby.db.exns.get((grant,))
         if exn is None or exn.pvrsn.major != 2 or exn.route != '/ipex/grant':
-            raise ValidationError('historical inspection requires a retained native grant')
-        credential, nests = self._nativeDisclosure(exn)
+            raise ValidationError('historical inspection requires a retained ACDC v2 IPEX grant')
+        credential, nests = self._acdcV2GrantDisclosure(exn)
         values, disclosure = project(credential, self.fields) if credential else ({}, {})
         return dict(purpose='historical-evidence', proofValidity='valid',
             currentStanding='not-evaluated', grant=grant,
@@ -336,10 +431,10 @@ class Context(doing.DoDoer):
         for nest in nests:
             credential = nest.serder
             bound = []
-            proofs = [proof for proof in self.native._blindProofs(nest)
+            proofs = [proof for proof in self.acdcV2Ipex._blindProofs(nest)
                       if proof.clan == BoundState and proof.acdc == credential.said]
-            if proofs and (regid := self.native._graphRegistry(credential, nest)):
-                _, events = self.native._registryEvidence(regid)
+            if proofs and (regid := self.acdcV2Ipex._graphRegistry(credential, nest)):
+                _, events = self.acdcV2Ipex._registryEvidence(regid)
                 for event in events:
                     for proof in proofs:
                         if event.ilk != 'bup' or event.sad['b'] != proof.said:
@@ -354,10 +449,10 @@ class Context(doing.DoDoer):
                 view=Diger(ser=credential.raw).qb64, boundEvents=bound))
         return sources
 
-    def _nativeCurrentStanding(self, nests):
+    def _acdcV2CurrentStanding(self, nests):
         """Require current standing for every node in retained parsed ``nests``.
 
-        Historical bound-edge validity remains the native verifier's decision.
+        Historical bound-edge validity remains the ACDC v2 IPEX verifier's decision.
         This additional application rule uses the configured current observer.
         Return None after all nodes pass; raise MissingChainError for stale or
         absent observations, or ValidationError for a node no longer issued.
@@ -370,11 +465,11 @@ class Context(doing.DoDoer):
             for regid in registries:
                 if not self.fresh(regid):
                     raise MissingChainError('observer evidence is missing or stale')
-                state = self.native._vetRegistry(regid, self.native._blindProofs(nest),
+                state = self.acdcV2Ipex._vetRegistry(regid, self.acdcV2Ipex._blindProofs(nest),
                                                  credential.said, acdc=credential)
                 if state is None or state.state != 'issued':
                     raise ValidationError('credential is not currently issued')
-            for _, regid in self.native._presentationRegistries(credential) or []:
+            for _, regid in self.acdcV2Ipex._presentationRegistries(credential) or []:
                 if not self.fresh(regid):
                     raise MissingChainError('presentation registry observation is missing or stale')
 
@@ -496,7 +591,7 @@ class Context(doing.DoDoer):
                 continue
             exn = self.hby.db.exns.get((record.grant,))
             try:
-                credential = (self._nativeCredential(exn) if exn.pvrsn.major == 2
+                credential = (self._acdcV2GrantCredential(exn) if exn.pvrsn.major == 2
                               else self._legacyCredential(exn))
                 if credential is None:
                     # Protocol-valid empty disclosure is terminal reporting work,
@@ -522,24 +617,28 @@ class Context(doing.DoDoer):
                 record.state, record.reason = 'rejected', str(error)
             self.db.submissions.pin(keys, record)
 
-    def request(self, url, *, body=None, data=None):
+    def request(self, url, *, body=None, data=None, trust=None):
         """Send one bounded CESR-evidence or JSON-webhook POST and yield while waiting.
 
         url selects the endpoint; body is raw CESR and data is a JSON payload.
+        ``trust`` supplies observer-only CA and certificate-hostname validation.
         Return the actual HTTP response, or None on timeout. The client/doer is
         removed and closed even on cancellation; response status determines the
         caller's observation or delivery decision."""
         target = urlsplit(url)
+        tls = ({'cafilepath': trust.cafilepath, 'certedhost': trust.certedhost}
+               if trust is not None else {})
         client = http.clienting.Client(scheme=target.scheme, hostname=target.hostname,
-            port=target.port or (443 if target.scheme == 'https' else 80))
-        doer = http.clienting.ClientDoer(client)
+            port=target.port or (443 if target.scheme == 'https' else 80),
+            redirectable=trust is None, **tls)
+        doer = SourceClientDoer(client) if trust is not None else http.clienting.ClientDoer(client)
         self.clients.add(client)
         self.extend([doer])
         try:
             client.request(method='POST', path=target.path or '/', body=body, data=data,
                 headers={'Content-Type': CESR_CONTENT_TYPE if body is not None else 'application/json'})
             deadline = self.tyme + self.timeout
-            while not client.responses and self.tyme < deadline:
+            while not client.responses and getattr(doer, 'error', None) is None and self.tyme < deadline:
                 yield self.tock
             return client.responses.popleft() if client.responses else None
         finally:
@@ -558,6 +657,14 @@ class Context(doing.DoDoer):
         self.wind(tymth)
         yield tock
         while True:
+            now = self.tyme
+            waitingDelivery = any(
+                record.state == 'accepted' and not record.delivered
+                and now >= self._deliveryRetry.get(record.grant, 0)
+                for _, record in self.db.submissions.getTopItemIter())
+            registryBudget = (MAX_OUTBOUND_REQUESTS_PER_TURN // 2
+                              if waitingDelivery
+                              else MAX_OUTBOUND_REQUESTS_PER_TURN)
             registries = set()
             for _, record in self.db.submissions.getTopItemIter():
                 if record.state != 'pending':
@@ -576,25 +683,57 @@ class Context(doing.DoDoer):
                     if (regid := issuerRegistry(nest.serder)) and not self.fresh(regid):
                         registries.add(regid)
                     registries.update(regid for _, regid in
-                        self.native._presentationRegistries(nest.serder) or []
+                        self.acdcV2Ipex._presentationRegistries(nest.serder) or []
                         if not self.fresh(regid))
                     # Nonissuer source triples are untrusted fetch hints until
                     # the core validates their exact accepted TEL event.
                     registries.update(pre.qb64 for pre, _, _ in nest.ssts
                         if pre.qb64 != nest.serder.israid and pre.qb64 not in self.hby.kevers
                         and not self.fresh(pre.qb64))
-            for regid in sorted(registries):
-                response = yield from self.request(self.observer,
-                    body=signedQuery(self.hab, 'tels', {'i': regid}))
+            selected, self._registryCursor = rotated(
+                registries, self._registryCursor,
+                registryBudget)
+            outbound = 0
+            for regid in selected:
+                try:
+                    response = yield from self.request(self.observer,
+                        body=signedQuery(self.hab, 'tels', {'i': regid}), trust=self.observerTrust)
+                except OSError:
+                    response = None
                 if response is not None:
                     self.observe(regid, response)
+                outbound += 1
+                if outbound >= MAX_OUTBOUND_REQUESTS_PER_TURN:
+                    break
             self.process()
-            for keys, record in self.db.submissions.getTopItemIter():
-                if record.state == 'accepted' and not record.delivered:
-                    response = yield from self.request(self.webhook, data=record.payload)
-                    if response is not None and 200 <= response['status'] < 300:
-                        record.delivered = True
-                        self.db.submissions.pin(keys, record)
+            now = self.tyme
+            deliveries = [(keys, record)
+                          for keys, record in self.db.submissions.getTopItemIter()
+                          if (record.state == 'accepted' and not record.delivered
+                              and now >= self._deliveryRetry.get(record.grant, 0))]
+            selected, self._deliveryCursor = rotated(
+                deliveries, self._deliveryCursor,
+                MAX_OUTBOUND_REQUESTS_PER_TURN - outbound,
+                key=lambda item: item[1].grant)
+            for keys, record in selected:
+                try:
+                    response = yield from self.request(
+                        self.webhook, data=record.payload)
+                except OSError:
+                    response = None
+                if response is not None and 200 <= response['status'] < 300:
+                    record.delivered = True
+                    self.db.submissions.pin(keys, record)
+                    self._deliveryFailures.pop(record.grant, None)
+                    self._deliveryRetry.pop(record.grant, None)
+                else:
+                    failures = self._deliveryFailures.get(record.grant, 0) + 1
+                    self._deliveryFailures[record.grant] = failures
+                    exponent = min(failures - 1, 6)
+                    delay = min(OUTBOUND_RETRY_INITIAL * (2 ** exponent),
+                                OUTBOUND_RETRY_MAXIMUM)
+                    self._deliveryRetry[record.grant] = self.tyme + delay
+                outbound += 1
             # Ordinary application retry; no distributed exactly-once promise.
             started = self.tyme
             while self.tyme < started + 1.0:
@@ -809,7 +948,7 @@ def setup(hby, hab, *, host='127.0.0.1', port=6644, tcpPort=None,
              BaserDoer(baser=context.legacy.reger), BaserDoer(baser=context.sections), context]
     if port is not None:
         server = createHttpServer(host=host, port=port, app=context.app,
-                                 keypath=keypath, certpath=certpath, cafilepath=cafilepath)
+                                  keypath=keypath, certpath=certpath, cafilepath=cafilepath)
         doers.append(http.ServerDoer(server=server))
     if tcpPort is not None:
         server = tcp.Server(ha=(host, tcpPort))
