@@ -15,7 +15,7 @@ from hio.core import http, tcp
 
 from keri import Vrsn_1_0, Vrsn_2_0, Kinds
 from keri.acdc import Regery
-from keri.acdc.regeventing import issuerRegistry, vetBlind, vetBound
+from keri.acdc.regeventing import issuerRegistry, vetBinds, vetBlind, vetBound
 from keri.acdc.sectioning import SectionBaser, Sectioner
 from keri.app import ipexing, agenting
 from keri.app.indirecting import createHttpServer
@@ -27,7 +27,8 @@ from keri.db import dbing, koming
 from keri.db.basing import BaserDoer
 from keri.help import helping
 from keri.kering import (ValidationError, ExtractionError, ShortageError, MissingChainError, MissingSchemaError,
-                         MissingRegistryError, MissingAnchorError, MissingSenderKeyStateError)
+                         MissingRegistryError, MissingAnchorError, MissingSenderKeyStateError,
+                         MissingBlindError)
 from keri.peer import exchanging
 from keri.vdr import verifying, eventing as legacyEventing
 
@@ -384,7 +385,7 @@ class Context(doing.DoDoer):
         dependencies retain their core exception. This boundary applies no
         Dolly current-reporting or observation policy and never expands a view.
         """
-        if not self.acdcV2Ipex.verifyAccepted(exn.said):
+        if not self.acdcV2Ipex.verifyAccepted(exn.said, historical=True):
             raise ValidationError('ACDC v2 IPEX proof or semantics failed')
         origins = exn.sad['a']['o']
         if not origins:
@@ -434,7 +435,9 @@ class Context(doing.DoDoer):
             proofs = [proof for proof in self.acdcV2Ipex._blindProofs(nest)
                       if proof.clan == BoundState and proof.acdc == credential.said]
             if proofs and (regid := self.acdcV2Ipex._graphRegistry(credential, nest)):
-                _, events = self.acdcV2Ipex._registryEvidence(regid)
+                _, events = self.acdcV2Ipex._registryEvidence(
+                    regid, proofs=self.acdcV2Ipex._blindProofs(nest),
+                    target=credential.said, acdc=credential)
                 for event in events:
                     for proof in proofs:
                         if event.ilk != 'bup' or event.sad['b'] != proof.said:
@@ -465,9 +468,18 @@ class Context(doing.DoDoer):
             for regid in registries:
                 if not self.fresh(regid):
                     raise MissingChainError('observer evidence is missing or stale')
-                state = self.acdcV2Ipex._vetRegistry(regid, self.acdcV2Ipex._blindProofs(nest),
-                                                 credential.said, acdc=credential)
-                if state is None or state.state != 'issued':
+                evidence = self.acdcV2Ipex._registryEvidence(regid)
+                if evidence is None:
+                    raise MissingChainError('current registry evidence is missing')
+                try:
+                    state = vetBinds(*evidence, db=self.hby.db,
+                        blinders=self.acdcV2Ipex._blindProofs(nest),
+                        target=credential.said, acdc=credential)
+                except MissingBlindError as error:
+                    raise MissingChainError('current registry state is undisclosed') from error
+                except MissingAnchorError as error:
+                    raise MissingChainError('current registry anchor evidence is missing') from error
+                if state.state != 'issued':
                     raise ValidationError('credential is not currently issued')
             for _, regid in self.acdcV2Ipex._presentationRegistries(credential) or []:
                 if not self.fresh(regid):
