@@ -2,7 +2,10 @@
 
 from types import MethodType, SimpleNamespace
 
-from hio.base import tyming
+import pytest
+
+from hio.base import doing, tyming
+from hio.core import http, tcp
 
 from dolly import serving
 
@@ -78,8 +81,8 @@ def test_work_loop_rotates_past_eight_unresponsive_registries(monkeypatch):
     work.close()
 
 
-def test_webhook_socket_failure_is_contained_and_backed_off(monkeypatch):
-    """A webhook OSError retains its durable row and enters bounded retry."""
+def test_webhook_request_failure_is_backed_off(monkeypatch):
+    """A substituted request-generator OSError retains its row and enters retry."""
     record = SimpleNamespace(
         grant="grant-00", state="accepted", delivered=False, payload={"ok": True})
     context = workContext([((record.grant,), record)])
@@ -105,3 +108,65 @@ def test_webhook_socket_failure_is_contained_and_backed_off(monkeypatch):
     next(work)
     assert calls == [context.webhook]
     work.close()
+
+
+@pytest.mark.parametrize('scope', ['webhook', 'observer'])
+def test_scheduled_client_failure_preserves_next_request_and_cancellation(monkeypatch, scope):
+    """Actual child faults fail one request; healthy work and cancellation still run."""
+    context = object.__new__(serving.Context)
+    context.clients, context.timeout = set(), 0.5
+    results, clients, owners, cancelled, closed = [], [], [], [], []
+    # Select observer ownership without performing a TLS handshake; real wrong-CA
+    # and hostname failures remain covered by test_dolly's socket/TLS workflow.
+    trust = SimpleNamespace(cafilepath=None, certedhost=None) if scope == 'observer' else None
+
+    def requester(tymth=None, tock=0.01, **kwa):
+        yield tock
+        results.append((yield from context.request('http://127.0.0.1:1/',
+            data={'failed': True}, trust=trust)))
+        results.append((yield from context.request('http://127.0.0.1:1/',
+            data={'healthy': True})))
+        try:
+            yield from context.request('http://127.0.0.1:1/', data={'cancelled': True})
+        finally:
+            cancelled.append(True)
+
+    doing.DoDoer.__init__(context, doers=[doing.doify(requester)], tock=0.01)
+
+    def service(client):
+        if client not in clients:
+            clients.append(client)
+            owners.append(next(owner for owner in context.doers
+                               if getattr(owner, 'client', None) is client))
+        index = clients.index(client)
+        if index == 0 and scope == 'webhook':
+            raise OSError('scheduled socket send failed')
+        client.waited = True
+        if index == 0:
+            client.connector.rxbs.extend(
+                b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nnot-hex\r\n')
+        elif index == 1:
+            client.connector.rxbs.extend(b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}')
+        # Feed wire bytes through the actual HIO respondent/chunk parser. The
+        # service/socket substitutions avoid external I/O, not the failing parser.
+        client.serviceResponse()
+
+    original_close = http.clienting.Client.close
+
+    def close(client):
+        if client in clients:
+            closed.append(client)
+        original_close(client)
+
+    monkeypatch.setattr(http.clienting.Client, 'close', close)
+    monkeypatch.setattr(http.clienting.Client, 'reopen', lambda client: True)
+    monkeypatch.setattr(http.clienting.Client, 'service', service)
+    monkeypatch.setattr(tcp.clienting.Client, 'serviceReceives', lambda client: None)
+    doing.Doist(tock=0.01, limit=0.2).do(doers=[context])
+    assert results[0] is None and results[1]['status'] == 200
+    assert isinstance(owners[0].error, OSError if scope == 'webhook' else ValueError)
+    assert owners[0].done is True
+    assert cancelled == [True] and len(clients) == 3
+    assert not context.clients and not context.deeds
+    assert all(client in closed for client in clients)
+    assert all(client.connector.cs is None for client in clients)

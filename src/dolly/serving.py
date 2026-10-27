@@ -156,17 +156,17 @@ class Notices:
         pass
 
 
-class SourceClientDoer(http.clienting.ClientDoer):
-    """Contain source transport failures without converting them into evidence."""
+class RequestClientDoer(http.clienting.ClientDoer):
+    """Contain socket and decoder failures for one observer or webhook request."""
     def __init__(self, client, **kwa):
         super().__init__(client, **kwa)
         self.error = None
 
     def recur(self, tyme):
-        """Service once, retaining only socket/TLS failures for the requester."""
+        """Service once, retaining expected socket/TLS and decoder failures."""
         try:
             return super().recur(tyme)
-        except OSError as error:
+        except (OSError, ValueError) as error:
             self.error = error
             return True
 
@@ -643,7 +643,7 @@ class Context(doing.DoDoer):
         client = http.clienting.Client(scheme=target.scheme, hostname=target.hostname,
             port=target.port or (443 if target.scheme == 'https' else 80),
             redirectable=trust is None, **tls)
-        doer = SourceClientDoer(client) if trust is not None else http.clienting.ClientDoer(client)
+        doer = RequestClientDoer(client)
         self.clients.add(client)
         self.extend([doer])
         try:
