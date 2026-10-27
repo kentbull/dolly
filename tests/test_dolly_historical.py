@@ -177,6 +177,12 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
     """
     received = []
 
+    class Policy:
+        result = None
+
+        def validity(self, credential):
+            return self.result
+
     class Hook:
         """Record any attempted acceptance delivery through a real HTTP server."""
 
@@ -242,10 +248,12 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                     with openHby(name='historical-dolly', temp=False,
                                  headDirPath=str(tmp_path), version=Vrsn_2_0) as verifier:
                         dhab = verifier.habByName('dolly') or verifier.makeHab(name='dolly')
+                        policy = Policy()
                         dolly = Dolly(verifier, dhab, issuers=[issuer.pre, authority.pre],
                             schemas=[near.schema['$id']], fields={'shown': 'a/shown/value',
                             'private': 'a/private/value'}, required=['shown'],
                             observer=observerTrust(f'https://observer-{phase}.test/'), webhook=hook,
+                            graphPolicy=policy,
                             db=DollyBaser(name=verifier.name, headDirPath=str(tmp_path), temp=False),
                             evidence=EvidenceContext(verifier, reger=RegBaser(name=verifier.name,
                                 headDirPath=str(tmp_path), temp=False)),
@@ -262,6 +270,16 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                             assert not dolly.fresh(registry.regk)
                             before = asdict(dolly.db.submissions.get((exn.said,)))
                             inspected = dolly.inspectHistorical(exn.said)
+                            exact = exchanging.serializeMessage(verifier, exn.said)
+                            for verdict, error in [(False, ValidationError), (None, MissingChainError)]:
+                                policy.result = verdict
+                                assert dolly.acdcV2Verification.evaluateGrant(exn.said, historical=True) is verdict
+                                with pytest.raises(error, match='graph'):
+                                    dolly._acdcV2GrantCredential(exn)
+                                assert dolly.inspectHistorical(exn.said) == inspected
+                                assert exchanging.serializeMessage(verifier, exn.said) == exact
+                                assert asdict(dolly.db.submissions.get((exn.said,))) == before
+                            policy.result = True
                             assert asdict(dolly.db.submissions.get((exn.said,))) == before
                             assert inspected['purpose'] == 'historical-evidence'
                             assert inspected['proofValidity'] == 'valid'
@@ -306,22 +324,28 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                                 dolly.ingest(authority.replay(gvrsn=Vrsn_2_0)
                                     + frame_v2_events(opaqueEvent))
                                 assert dolly.inspectHistorical(exn.said) == expected
-                                # Generic EXN authentication retains this real envelope,
-                                # but its missing issuance opening cannot prove the graph.
+                                # Generic EXN retention is authentic history, not use
+                                # approval: this opening omits the initial issuance state.
                                 incomplete = messagize(far, bonds=[revoked.data],
                                                        framed=False, gvrsn=Vrsn_2_0)
-                                invalid, invalidAtc = grant(issuer, dhab.pre, 'incomplete bound graph',
+                                incompleteGrant, incompleteAtc = grant(issuer, dhab.pre, 'incomplete bound graph',
                                     origin=proofNear, artifacts=[incomplete], modifiers=plan)
                                 generic = exchanging.Exchanger(verifier, handlers=[])
-                                dolly._parser(Vrsn_2_0).parse(ims=bytearray(invalid.raw + invalidAtc), exc=generic)
-                                assert generic.complete(invalid.said)
+                                dolly._parser(Vrsn_2_0).parse(ims=bytearray(incompleteGrant.raw + incompleteAtc), exc=generic)
+                                assert generic.complete(incompleteGrant.said)
+                                incompleteBytes = exchanging.serializeMessage(verifier, incompleteGrant.said)
                             else:
                                 assert inspected == expected  # No KEL/TEL/grant replay on reopen.
                                 with pytest.raises(MissingChainError, match='observer evidence'):
                                     dolly._acdcV2GrantCredential(exn)
-                            with pytest.raises(ValidationError, match='proof or semantics'):
-                                dolly.inspectHistorical(invalid.said)
-                            assert dolly.db.submissions.get((invalid.said,)) is None
+                            assert dolly.inspectHistorical(incompleteGrant.said)['proofValidity'] == 'valid'
+                            assert dolly.acdcV2Verification.evaluateGrant(
+                                incompleteGrant.said, historical=True) is None
+                            with pytest.raises(MissingChainError, match='graph'):
+                                dolly._acdcV2GrantCredential(incompleteGrant)
+                            assert exchanging.serializeMessage(verifier, incompleteGrant.said) == incompleteBytes
+                            assert dolly.db.submissions.get((incompleteGrant.said,)) is None
+                            assert verifier.db.erpy.get((incompleteGrant.said,)) is None
                             # Fuller cached evidence cannot widen historical inspection.
                             dolly.ingest(frame_v2_events(sectattr(full.sad['a'])))
                             assert dolly.inspectHistorical(exn.said) == expected

@@ -237,8 +237,9 @@ class Context(doing.DoDoer):
         self.sections = sections if sections is not None else SectionBaser(
             name=hby.name, base=hby.base, temp=hby.temp)
         self.scy = Sectioner(db=hby.db, sections=self.sections)
-        ipexing.loadHandlers(hby, self.exc, Notices(), self.rgy,
-                            graphPolicy=graphPolicy, sections=self.sections)
+        self.acdcV2Verification = ipexing.loadHandlers(
+            hby, self.exc, Notices(), self.rgy,
+            graphPolicy=graphPolicy, sections=self.sections)
         self.acdcV2Ipex = self.exc.routes['/ipex/grant'].acdcV2
         self.app = falcon.App()
         self.app.add_route('/ingest', IntakeEnd(self))
@@ -366,14 +367,19 @@ class Context(doing.DoDoer):
     def _acdcV2GrantCredential(self, exn):
         """Return the retained origin credential, or None for an empty grant.
 
-        ``exn`` is the accepted ACDC v2 IPEX grant. Revalidate its proof and semantics
-        before making any application decision, then apply current standing to
+        ``exn`` is the accepted ACDC v2 IPEX grant. Require explicit semantic
+        approval before making any application decision, then apply current standing to
         every disclosed node. Missing evidence remains retryable; invalid proof
         or current standing raises ValidationError. Selection never resolves a
         fuller cached disclosure in place of this grant's retained material.
         """
         credential, nests = self._acdcV2GrantDisclosure(exn)
         if credential is not None:
+            result = self.acdcV2Verification.evaluateGrant(exn.said, historical=True)
+            if result is None:
+                raise MissingChainError('ACDC v2 graph evaluation is unresolved')
+            if result is not True:
+                raise ValidationError('ACDC v2 graph policy refuses current reporting')
             self._acdcV2CurrentStanding(nests)
         return credential
 
@@ -381,12 +387,12 @@ class Context(doing.DoDoer):
         """Return the core-verified retained origin and its disclosed graph nodes.
 
         ``exn`` must name a retained ACDC v2 IPEX grant. Empty disclosures return
-        (None, []). Invalid semantics/proofs raise ValidationError; unavailable
+        (None, []). Invalid authentication/proofs raise ValidationError; unavailable
         dependencies retain their core exception. This boundary applies no
         Dolly current-reporting or observation policy and never expands a view.
         """
         if not self.acdcV2Ipex.verifyAccepted(exn.said, historical=True):
-            raise ValidationError('ACDC v2 IPEX proof or semantics failed')
+            raise ValidationError('ACDC v2 IPEX proof authentication failed')
         origins = exn.sad['a']['o']
         if not origins:
             return None, []
@@ -405,8 +411,8 @@ class Context(doing.DoDoer):
         apply to current reporting; inspection uses only configured field paths.
 
         Unknown or non-ACDC-v2 grants or invalid proofs raise ValidationError;
-        unavailable dependencies retain their core exception. Core graph proof
-        verification remains authoritative, including its configured graphPolicy.
+        unavailable authentication dependencies retain their core exception.
+        Current graph policy does not authorize or invalidate historical inspection.
         """
         exn = self.hby.db.exns.get((grant,))
         if exn is None or exn.pvrsn.major != 2 or exn.route != '/ipex/grant':

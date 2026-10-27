@@ -238,7 +238,7 @@ def test_dolly_independent_schema_http_arrival_preserves_disclosure(tmp_path, ar
         with openHby(name=f'{name}-issuer', version=Vrsn_2_0) as issuer:
             ihab = issuer.makeHab(name='issuer')
             child = acdcmap(israid=ihab.pre, attribute=dict(d='', role='member'))
-            edge = ({'d': '', 'member': {'d': '', 'n': child.said, 'o': 'NI2I', 's': schema}}
+            edge = ({'d': '', 'member': {'d': '', 'n': child.said, 's': schema, 'o': 'NI2I'}}
                     if schemaUse == 'edge' else None)
             full = acdcmap(israid=ihab.pre, uuid=Noncer().qb64,
                 schema=schema if schemaUse == 'own' else None, edge=edge,
@@ -314,12 +314,22 @@ def test_dolly_independent_schema_http_arrival_preserves_disclosure(tmp_path, ar
                             post(exn.raw + atc)
                         if ((arrival != 'before' and phase == 0)
                                 or (arrival == 'restart' and phase == 1)):
-                            assert not dolly.exc.complete(exn.said)
-                            assert verifier.db.emse.get((exn.said, schema)) is not None
+                            if schemaUse == 'own':
+                                assert not dolly.exc.complete(exn.said)
+                                assert verifier.db.emse.get((exn.said, schema)) is not None
+                            else:
+                                # An edge pin is a use dependency. Authentic Grant
+                                # retention and historical inspection already succeed.
+                                assert dolly.exc.complete(exn.said)
+                                assert verifier.db.emse.get((exn.said, schema)) is None
+                                assert dolly.inspectHistorical(exn.said)['proofValidity'] == 'valid'
                             assert dolly.db.submissions.get((exn.said,)).state == 'pending'
                             assert received == []
+                            exact = exchanging.serializeMessage(verifier, exn.said) if schemaUse == 'edge' else None
                             if arrival == 'after' or phase:
                                 section(schemaMessage)
+                                if exact is not None:
+                                    assert exchanging.serializeMessage(verifier, exn.said) == exact
                         if arrival == 'restart' and phase == 0:
                             continue
                         assert dolly.exc.complete(exn.said)
