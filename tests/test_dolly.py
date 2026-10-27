@@ -546,7 +546,10 @@ def test_observer_https_accepts_configured_identity_and_rejects_copied_response(
 def test_acdc_v2_partial_full_grants_observer_acquisition_and_real_webhooks(binding, transport):
     """Preserve actual disclosure hooks while the evidence child owns pruning.
 
-    Each registry-binding form uses independently acquired observer evidence.
+    The selected upstream IPEX profile authenticates top-level rd using
+    independently acquired observer evidence. Inner and rd-free TEL-only forms
+    select no supported issuer factor and must reject without escrow or hooks;
+    generic TEL binding support is tested by the core verifier's own tests.
     The real scheduler must start exactly one KRAM pruner and cancel it with
     Dolly, while replay cannot enrich an earlier retained disclosure.
     """
@@ -670,6 +673,14 @@ def test_acdc_v2_partial_full_grants_observer_acquisition_and_real_webhooks(bind
             assert dolly.evidence.pruner.done is False
             if transport == 'http':
                 assert client.responses.popleft()['status'] == 202
+            if binding != 'top':
+                assert received == []
+                for exn in grants:
+                    assert not dolly.exc.complete(exn.said)
+                    assert verifier.db.exns.get((exn.said,)) is None
+                    assert verifier.db.epse.get((exn.said,)) is None
+                assert [cue for cue in dolly.exc.cues if cue['kin'] == 'proof'] == []
+                return
             assert len(received) == 2
             payloads = {item['grant']: item for item in received}
             first, second = (payloads[exn.said] for exn in grants)
