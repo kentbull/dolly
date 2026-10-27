@@ -21,13 +21,17 @@ from keri.acdc.regbasing import RegBaser
 from keri.acdc.sectioning import SectionBaser
 from dolly.serving import Context as Dolly, DollyBaser
 from keri.app.evidencing import EvidenceContext, signedQuery
-from keri.app.habbing import openHby
+from keri.app.habbing import Habery, openHby
+from keri.app.configing import Configer
+from keri.app.keeping import Keeper
+from keri.db.basing import Baser
 from keri.app.httping import CESR_CONTENT_TYPE
 from keri.core import Blinder, Codens, Compactor, Counter, Diger, Noncer, Number, SealSource, messagize
-from keri.kering import MissingChainError, ValidationError
+from keri.kering import MissingAnchorError, MissingChainError, ValidationError
 from keri.peer import exchanging
 from keri.vdr import eventing as legacy, verifying
 from kfobserver.core.evidence import Context as Observer
+from kfobserver.core.evidence_observing import ObservationBaser
 
 
 SERVER_TLS = Path(__file__).with_name('tls') / 'server.pem'
@@ -42,6 +46,125 @@ def frame_v2_events(*events):
     """Frame public ACDC v2 messages with explicit empty attachment groups."""
     foot = Counter(Codens.AttachmentGroup, count=0, version=Vrsn_2_0).qb64b
     return b''.join(event.raw + foot for event in events)
+
+
+def test_retained_grant_opaque_successor_stays_historical_and_pending(tmp_path, monkeypatch):
+    """A later undisclosed state cannot erase retained proof or authorize a current hook."""
+    received = []
+
+    class Hook:
+        def on_post(self, req, rep):
+            received.append(req.media)
+            rep.media = {'received': True}
+
+    app = falcon.App()
+    app.add_route('/hook', Hook())
+    server = http.Server(servant=tcp.Server(ha=('127.0.0.1', 0)), app=app)
+    assert server.reopen()
+    server.servant.eha = server.servant.ha
+    hook = f'http://127.0.0.1:{server.servant.ha[1]}/hook'
+
+    def habery(name):
+        kwa = dict(name=name, headDirPath=str(tmp_path), temp=False, reopen=True)
+        return Habery(name=name, temp=True, version=Vrsn_2_0,
+                      ks=Keeper(**kwa), db=Baser(**kwa), cf=Configer(**kwa))
+
+    try:
+        for phase in range(2):
+            source, verifier, observer = (habery(name) for name in
+                ('opaque-source', 'opaque-dolly', 'opaque-observer'))
+            issuer = source.habByName('issuer') or source.makeHab(name='issuer')
+            dhab = verifier.habByName('dolly') or verifier.makeHab(name='dolly')
+            rgy = Regery(source, baser=RegBaser(name=source.name,
+                headDirPath=str(tmp_path), temp=False))
+            dolly = Dolly(verifier, dhab, issuers=[issuer.pre], schemas=[],
+                fields={'shown': 'a/shown'}, required=['shown'],
+                observer=observerTrust('https://observer.test/'), webhook=hook,
+                db=DollyBaser(name=verifier.name, headDirPath=str(tmp_path), temp=False),
+                evidence=EvidenceContext(verifier, reger=RegBaser(name=verifier.name,
+                    headDirPath=str(tmp_path), temp=False)),
+                legacy=verifying.Verifier(verifier, reger=legacy.Reger(name=verifier.name,
+                    headDirPath=str(tmp_path), temp=False)),
+                sections=SectionBaser(name=verifier.name, headDirPath=str(tmp_path), temp=False))
+            sourceURL = 'https://registrar.test/'
+            obs = Observer(observer, readers=[dhab.pre], sources=[observerTrust(sourceURL)],
+                reger=RegBaser(name=observer.name, headDirPath=str(tmp_path), temp=False),
+                observations=ObservationBaser(name=observer.name,
+                    headDirPath=str(tmp_path), temp=False))
+            try:
+                paths = [owner.path for hby in (source, verifier, observer)
+                         for owner in (hby.ks, hby.db, hby.cf)]
+                paths += [rgy.baser.path, dolly.db.path, dolly.evidence.reger.path,
+                          dolly.legacy.reger.path, dolly.sections.path,
+                          obs.reger.path, obs.observations.path]
+                assert all(Path(path).is_relative_to(tmp_path) for path in paths)
+                if phase == 0:
+                    registry = rgy.makeRegistry('issuer-registry', issuer.pre)
+                    rip = rgy.store.event(registry.regk)
+                    issuer.interact(data=[dict(d=rip.said)], version=Vrsn_2_0)
+                    assert registry.anchorMsg(rip.said)
+                    credential = acdcmap(israid=issuer.pre, regid=registry.regk,
+                        attribute=dict(d='', shown='retained value'))
+                    first, event1 = Registrar(rgy).issue(registry, acdc=credential)
+                    issuer.interact(data=[dict(d=event1.said)], version=Vrsn_2_0)
+                    assert registry.anchorMsg(event1.said)
+                    public = issuer.replay(gvrsn=Vrsn_2_0) + frame_v2_events(rip, event1)
+                    dolly.schemas.add(credential.schema['$id'])
+                    dolly.ingest(public)
+                    proofed = messagize(credential, bonds=[first.data], gvrsn=Vrsn_2_0)
+                    exn, atc = grant(issuer, dhab.pre, 'retain first state', origin=proofed)
+                    assert dolly.ingest(exn.raw + atc) == [dict(grant=exn.said, state='pending')]
+                    expected = dolly.inspectHistorical(exn.said)
+                    retained = tuple(verifier.db.enst.get((exn.said,)))
+                    _, opaque = Registrar(rgy).issue(registry, acdc=credential, state='revoked')
+                    issuer.interact(data=[dict(d=opaque.said)], version=Vrsn_2_0)
+                    assert registry.anchorMsg(opaque.said)
+                    public = issuer.replay(gvrsn=Vrsn_2_0) + frame_v2_events(rip, event1, opaque)
+                    dolly.ingest(public)
+                else:
+                    registry = rgy.registryByName('issuer-registry')
+                    dolly.schemas.add(credential.schema['$id'])
+                assert dolly.inspectHistorical(exn.said) == expected
+                assert tuple(verifier.db.enst.get((exn.said,))) == retained
+                obs.ingest(dhab.replay(gvrsn=Vrsn_2_0))
+                assert not obs.observe(sourceURL, public)['rejected']
+                response = testing.TestClient(obs.app).simulate_post('/',
+                    body=signedQuery(dhab, 'tels', {'i': registry.regk}),
+                    headers={'Content-Type': CESR_CONTENT_TYPE})
+                assert dolly.observe(registry.regk, dict(status=response.status_code,
+                    body=response.content, headers={k.lower(): v for k, v in response.headers.items()}))
+                assert dolly.fresh(registry.regk)
+                # Inject only the application's current verifier boundary. Core
+                # recovery/anchor verification is exercised in its own real-owner tests.
+                missing = MissingAnchorError('current registry anchor is unavailable')
+
+                def missing_anchor(*args, **kwa):
+                    raise missing
+
+                with monkeypatch.context() as patch:
+                    patch.setattr('dolly.serving.vetBinds', missing_anchor)
+                    dolly.process()
+                    assert dolly.db.submissions.get((exn.said,)).state == 'pending'
+                    with pytest.raises(MissingChainError) as error:
+                        dolly._acdcV2GrantCredential(verifier.db.exns.get((exn.said,)))
+                    assert error.value.__cause__ is missing
+                dolly.process()
+                submission = dolly.db.submissions.get((exn.said,))
+                assert submission.state == 'pending'
+                assert not submission.payload and not submission.delivered
+                with pytest.raises(MissingChainError, match='undisclosed'):
+                    dolly._acdcV2GrantCredential(verifier.db.exns.get((exn.said,)))
+                doing.Doist(real=True, tock=0.01, limit=0.2).do(
+                    doers=[http.ServerDoer(server=server), dolly])
+                assert received == []
+            finally:
+                obs.close()
+                dolly.close()
+                rgy.close()
+                for hby in (observer, verifier, source):
+                    hby.close()
+    finally:
+        server.close()
 
 
 def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
@@ -135,7 +258,7 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                                 exn, atc = grant(issuer, dhab.pre, 'historical bound graph',
                                     origin=proofNear, artifacts=[proofFar], modifiers=plan)
                                 assert dolly.ingest(exn.raw + atc) == [dict(grant=exn.said, state='pending')]
-                            assert dolly.acdcV2Ipex.verifyAccepted(exn.said)
+                            assert dolly.acdcV2Ipex.verifyAccepted(exn.said, historical=True)
                             assert not dolly.fresh(registry.regk)
                             before = asdict(dolly.db.submissions.get((exn.said,)))
                             inspected = dolly.inspectHistorical(exn.said)
@@ -176,6 +299,12 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                                 assert refused.state == 'rejected'
                                 assert refused.reason == 'credential is not currently issued'
                                 assert refused.payload == {} and not refused.delivered
+                                assert dolly.inspectHistorical(exn.said) == expected
+                                # An undisclosed later authority update cannot rewrite
+                                # the retained bound graph's selected proof prefix.
+                                _, opaqueEvent = publish('issued')
+                                dolly.ingest(authority.replay(gvrsn=Vrsn_2_0)
+                                    + frame_v2_events(opaqueEvent))
                                 assert dolly.inspectHistorical(exn.said) == expected
                                 # Generic EXN authentication retains this real envelope,
                                 # but its missing issuance opening cannot prove the graph.
