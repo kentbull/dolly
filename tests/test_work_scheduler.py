@@ -34,7 +34,7 @@ def workContext(records):
     context.hab = object()
     context.acdcV2Ipex = SimpleNamespace(
         _presentationRegistries=lambda serder: [])
-    context.fresh = lambda regid: False
+    context.synchronized = lambda regid: False
     context.observer = "https://observer.invalid"
     context.observerTrust = object()
     context.webhook = "https://webhook.invalid"

@@ -22,7 +22,6 @@ from keri.vdr import eventing as legacy, verifying
 from keri.vc import proving, protocoling
 from keri.acdc import Regery, Registrar as AcdcV2Registrar, apply, offer, agree, admit
 from keri.acdc.sectioning import SectionBaser
-from keri.app.credentialing import Wallet
 from keri.cli.common.acdc_v2_ipex import Peer, Intake
 from keri.help import helping
 from kfobserver.core.evidence import Context as Observer
@@ -399,7 +398,7 @@ def test_reopened_dolly_requires_active_observer_observation(tmp_path):
         dolly = context(oldURL)
         try:
             assert dolly.observe(rip.said, report)
-            assert dolly.fresh(rip.said)
+            assert dolly.synchronized(rip.said)
             previous = dolly.db.observed.get((rip.said,))
         finally:
             dolly.close()
@@ -407,12 +406,12 @@ def test_reopened_dolly_requires_active_observer_observation(tmp_path):
         try:
             assert dolly.rgy.store.head(rip.said).qb64 == issued.said
             assert dolly.db.observed.get((rip.said,)) == previous
-            assert not dolly.fresh(rip.said)
+            assert not dolly.synchronized(rip.said)
             # The same authenticated evidence may be observed afresh through
             # the newly configured endpoint, without discarding public history.
             assert dolly.observe(rip.said, report)
             assert dolly.db.observed.get((rip.said,)).observer == newURL
-            assert dolly.fresh(rip.said)
+            assert dolly.synchronized(rip.said)
         finally:
             dolly.close()
             obs.close()
@@ -966,8 +965,7 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
         reg = registrarContext(registrar, observers=[ohab.pre])
         obs = Observer(observer, readers=[dhab.pre])
         sections = SectionBaser(name=holder.name, temp=True)
-        hwallet, dwallet = Wallet(holder, hrgy), None
-        peer = Peer(holder, hrgy, hwallet, sections)
+        peer = Peer(holder, hrgy, sections)
         public = bytes(authority.replay(gvrsn=Vrsn_2_0) + ihab.replay(gvrsn=Vrsn_2_0)
                        + hhab.replay(gvrsn=Vrsn_2_0) + frame_v2_events(*rips, farIss, nearIss))
         received = []
@@ -1009,7 +1007,6 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
                 schemas=[full.schema['$id']], fields={'entitlement': 'a/entitlement/value',
                     'private': 'a/private/value'}, required=['entitlement'],
                 observer=observerTrust(urls[1], certedhost='localhost'), webhook=urls[3] + 'hook')
-            dwallet = Wallet(verifier, dolly.rgy, exc=dolly.exc)
             ingress = http.Server(servant=tcp.Server(ha=('127.0.0.1', 0)), app=dolly.app)
             assert ingress.reopen()
             ingress.servant.eha = ingress.servant.ha
@@ -1073,13 +1070,13 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
             assert received[0]['business'] == {'entitlement': 'use-service', 'private': None}
             assert received[0]['disclosure']['private'] == 'undisclosed'
             assert 'not-negotiated' not in json.dumps(received[0])
-            assert all(dolly.fresh(regid) for regid in (farReg.regk, nearReg.regk, presentationReg.regk))
+            assert all(dolly.synchronized(regid) for regid in (farReg.regk, nearReg.regk, presentationReg.regk))
             assert verifier.kevers[ihab.pre].lastEst.d == ihab.kever.lastEst.d
             assert verifier.kevers[hhab.pre].lastEst.d == hhab.kever.lastEst.d
             admitted, iatc = admit(dhab, 'admit the verified entitlement chain', final)
             dolly.ingest(admitted.raw + iatc)
             assert dolly.exc.complete(admitted.said)
-            assert dwallet.recordAdmission(final.said, admitted.said, consent=True).credential == full.said
+            assert dolly.acdcV2Verification.validateAdmission(final.said, admitted.said, consent=True).credential == full.said
             send(urls[2] + 'ingest', admitted.raw + iatc)
             assert peer.exc.complete(admitted.said)
         finally:
@@ -1087,11 +1084,8 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
                 client.close()
             for server in servers:
                 server.close()
-            if dwallet:
-                dwallet.close()
             if dolly:
                 dolly.close()
-            hwallet.close()
             sections.close()
             reg.close()
             obs.close()

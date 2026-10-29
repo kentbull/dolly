@@ -159,6 +159,7 @@ class Notices:
 class RequestClientDoer(http.clienting.ClientDoer):
     """Contain socket and decoder failures for one observer or webhook request."""
     def __init__(self, client, **kwa):
+        """Wrap client with HIO options kwa and initialize its captured transport error."""
         super().__init__(client, **kwa)
         self.error = None
 
@@ -203,7 +204,7 @@ class Context(doing.DoDoer):
         ``hby`` and ``hab`` supply the identity; issuers/schemas and field paths
         define reporting policy. ``observer`` supplies its HTTPS URL, explicit
         CA bundle, and optional expected certificate hostname. Webhook URL and
-        positive finite maximumAge/timeout configure delivery and freshness.
+        positive finite maximumAge/timeout configure legacy TSN timing and request deadlines.
         Optional db/evidence/legacy/sections stores support persistent reopen;
         this context closes them. The shared SectionBaser feeds parser intake
         and graphPolicy-aware ACDC v2 IPEX verification, without expanding retained
@@ -315,53 +316,41 @@ class Context(doing.DoDoer):
             self.db.submissions.put((submitted,), submission)
         return submitted
 
-    def fresh(self, regid):
-        """Return whether regid has a matching fresh report from the current observer.
+    def synchronized(self, regid):
+        """Check that the configured source supplied the accepted registry head.
 
-        A different configured URL, missing/moved local head, future timestamp,
-        or report older than maximumAge fails freshness. No global latest-state
-        inference follows from this application observation."""
+        regid selects a registry. This is a source/head correspondence check,
+        not an observation-age or global-latest claim; KRAM owns message timing.
+        """
         record = self.db.observed.get((regid,))
         head = self.rgy.store.head(regid)
-        if (record is None or record.observer != self.observer
-                or head is None or record.head != head.qb64):
-            return False
-        age = (helping.nowUTC() - helping.fromIso8601(record.observed)).total_seconds()
-        return 0 <= age <= self.maximumAge
+        return (record is not None and record.observer == self.observer
+                and head is not None and record.head == head.qb64)
 
     def observe(self, regid, response):
-        """Retain one fresh configured-observer report only after local proof validation.
+        """Verify a CESR response and record its accepted head and local receipt time.
 
         Args:
-            regid (str): Registry whose advertised head must independently verify.
-            response (dict): HTTP status, headers, and exact public KEL/TEL body returned
-            by the context's configured observer request.
+            regid (str): Requested registry identifier.
+            response (dict): HTTP status, headers and complete CESR response body.
 
         Returns:
-            bool: True after persisting this source's observation marker; False for
-            unsuccessful/stale/malformed metadata, pending/rejected evidence, or a head
-            mismatch. A successful HTTP response alone supplies no observation authority.
+            bool: Whether ordinary processing accepted the requested registry
+                evidence without unresolved dependencies or rejected messages.
 
-        The evidence owner may retain authenticated KEL/TEL while a response fails the
-        observation policy. Store/unexpected decoding errors propagate; no credential
-        view or wallet admission is created by this freshness operation."""
+        HTTP headers assert no credential status or freshness. Protocol processors
+        authenticate the body; application graph and credential checks remain separate.
+        """
         headers = response.get('headers', {})
-        if (response['status'] != 200 or headers.get('observer-evidence-state') != 'fresh'
+        if (response['status'] != 200
                 or headers.get('content-type', '').split(';')[0] != CESR_CONTENT_TYPE):
-            return False
-        stamp, head = headers.get('observer-observed-at'), headers.get('observer-registry-head')
-        try:
-            age = (helping.nowUTC() - helping.fromIso8601(stamp)).total_seconds()
-        except (ValueError, TypeError):
-            return False
-        if not 0 <= age <= self.maximumAge:
             return False
         result = self.evidence.ingest(response['body'])
         accepted = self.rgy.store.head(regid)
         if (result['rejected'] or result['pending'] or accepted is None
-                or accepted.qb64 != head or result['heads'].get(regid) != head):
+                or result['heads'].get(regid) != accepted.qb64):
             return False
-        self.db.observed.pin((regid,), Observation(stamp, head, self.observer))
+        self.db.observed.pin((regid,), Observation(helping.nowIso8601(), accepted.qb64, self.observer))
         return True
 
     def _acdcV2GrantCredential(self, exn):
@@ -463,8 +452,8 @@ class Context(doing.DoDoer):
 
         Historical bound-edge validity remains the ACDC v2 IPEX verifier's decision.
         This additional application rule uses the configured current observer.
-        Return None after all nodes pass; raise MissingChainError for stale or
-        absent observations, or ValidationError for a node no longer issued.
+        Return None after all nodes pass; raise MissingChainError for missing or
+        mismatched source evidence, or ValidationError for a node no longer issued.
         """
         for nest in nests:
             credential = nest.serder
@@ -472,8 +461,8 @@ class Context(doing.DoDoer):
             registries = ({declared} if declared else {pre.qb64 for pre, _, _ in nest.ssts
                 if pre.qb64 != credential.israid and pre.qb64 not in self.hby.kevers})
             for regid in registries:
-                if not self.fresh(regid):
-                    raise MissingChainError('observer evidence is missing or stale')
+                if not self.synchronized(regid):
+                    raise MissingChainError('observer evidence has not been synchronized')
                 evidence = self.acdcV2Ipex._registryEvidence(regid)
                 if evidence is None:
                     raise MissingChainError('current registry evidence is missing')
@@ -488,8 +477,8 @@ class Context(doing.DoDoer):
                 if state.state != 'issued':
                     raise ValidationError('credential is not currently issued')
             for _, regid in self.acdcV2Ipex._presentationRegistries(credential) or []:
-                if not self.fresh(regid):
-                    raise MissingChainError('presentation registry observation is missing or stale')
+                if not self.synchronized(regid):
+                    raise MissingChainError('presentation registry evidence has not been synchronized')
 
     def _legacyCredential(self, exn):
         """Return a core-verified legacy credential only with fresh source standing.
@@ -698,16 +687,16 @@ class Context(doing.DoDoer):
                 except ValidationError:
                     continue
                 for nest in exchanging.loadParsedNestedSubstreams(self.hby, exn.said):
-                    if (regid := issuerRegistry(nest.serder)) and not self.fresh(regid):
+                    if (regid := issuerRegistry(nest.serder)) and not self.synchronized(regid):
                         registries.add(regid)
                     registries.update(regid for _, regid in
                         self.acdcV2Ipex._presentationRegistries(nest.serder) or []
-                        if not self.fresh(regid))
+                        if not self.synchronized(regid))
                     # Nonissuer source triples are untrusted fetch hints until
                     # the core validates their exact accepted TEL event.
                     registries.update(pre.qb64 for pre, _, _ in nest.ssts
                         if pre.qb64 != nest.serder.israid and pre.qb64 not in self.hby.kevers
-                        and not self.fresh(pre.qb64))
+                        and not self.synchronized(pre.qb64))
             selected, self._registryCursor = rotated(
                 registries, self._registryCursor,
                 registryBudget)
@@ -766,7 +755,8 @@ class Context(doing.DoDoer):
         for client in tuple(self.clients):
             client.close()
         self.db.close()
-        self.evidence.close()
+        # Dolly owns this shared store, including externally supplied evidence.
+        self.rgy.close()
         self.legacy.reger.close()
         self.sections.close()
 

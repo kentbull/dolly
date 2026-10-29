@@ -133,7 +133,7 @@ def test_retained_grant_opaque_successor_stays_historical_and_pending(tmp_path, 
                     headers={'Content-Type': CESR_CONTENT_TYPE})
                 assert dolly.observe(registry.regk, dict(status=response.status_code,
                     body=response.content, headers={k.lower(): v for k, v in response.headers.items()}))
-                assert dolly.fresh(registry.regk)
+                assert dolly.synchronized(registry.regk)
                 # Inject only the application's current verifier boundary. Core
                 # recovery/anchor verification is exercised in its own real-owner tests.
                 missing = MissingAnchorError('current registry anchor is unavailable')
@@ -267,7 +267,7 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                                     origin=proofNear, artifacts=[proofFar], modifiers=plan)
                                 assert dolly.ingest(exn.raw + atc) == [dict(grant=exn.said, state='pending')]
                             assert dolly.acdcV2Ipex.verifyAccepted(exn.said, historical=True)
-                            assert not dolly.fresh(registry.regk)
+                            assert not dolly.synchronized(registry.regk)
                             before = asdict(dolly.db.submissions.get((exn.said,)))
                             inspected = dolly.inspectHistorical(exn.said)
                             exact = exchanging.serializeMessage(verifier, exn.said)

@@ -18,5 +18,6 @@ JSON policy. Configure `observer` as `{"url": "https://observer.example/",
 IP to a certificate issued for a DNS name, add `"certedhost":
 "observer.example"`. Dolly rejects plaintext or missing observer trust and does
 not follow observer redirects. This authenticates the configured response hop;
-local KERI/ACDC proof and freshness validation still determine standing, and no
-observation is a global-latest claim.
+local KERI/ACDC proof validation determines standing. Native v2 uses no custom
+observer freshness headers or observation-age gate; KRAM owns message timing.
+A source response is not a global-latest claim.
