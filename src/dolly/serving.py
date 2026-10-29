@@ -159,6 +159,7 @@ class Notices:
 class RequestClientDoer(http.clienting.ClientDoer):
     """Contain socket and decoder failures for one observer or webhook request."""
     def __init__(self, client, **kwa):
+        """Wrap client with HIO options kwa and initialize its captured transport error."""
         super().__init__(client, **kwa)
         self.error = None
 
