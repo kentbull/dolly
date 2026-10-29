@@ -153,9 +153,10 @@ def test_installed_wheel_dual_listener_start_stop_restart_and_local_inspect(tmp_
     """Run the actual console executable outside source with persistent identity.
 
     Both transports report a packaged non-vLEI credential. SIGTERM cancels the
-    service; restart preserves delivered state and accepts a later TCP grant
-    without replay. Encrypted authentication remains required, and passing a
-    passcode to an unencrypted identity cannot migrate its Keeper.
+    service; restart preserves delivered state and accepts a freshly authored TCP
+    grant without KEL replay or relaxing the enabled KRAM acceptance window.
+    Encrypted authentication remains required, and passing a passcode to an
+    unencrypted identity cannot migrate its Keeper.
     """
     received = []
 
@@ -196,7 +197,7 @@ def test_installed_wheel_dual_listener_start_stop_restart_and_local_inspect(tmp_
         credential = acdcmap(israid=issuer.pre, schema=schema.sed,
                              attribute=dict(d='', entitlement='installed-wheel'))
         grants = [grant(issuer, verifier, f'installed {index}', origin=signed(credential, issuer))
-                  for index in range(3)]
+                  for index in range(2)]
         policy = tmp_path / 'policy.json'
         policy.write_text(json.dumps(dict(issuers=[issuer.pre], schemas=[schema.said],
             fields={'entitlement': 'a/entitlement'}, required=['entitlement'],
@@ -291,6 +292,10 @@ def test_installed_wheel_dual_listener_start_stop_restart_and_local_inspect(tmp_
                         assert record['state'] == 'accepted' and record['delivered']
                 else:
                     assert inspect(grants[0][0].said)['delivered']
+                    # This is a new live request after restart. Signing it before
+                    # startup/inspection can correctly expire its KRAM window.
+                    grants.append(grant(issuer, verifier, 'installed 2',
+                                        origin=signed(credential, issuer)))
                     with socket.create_connection(('127.0.0.1', tcpPort)) as connection:
                         connection.sendall(grants[2][0].raw + grants[2][1])
                     waitFor(lambda: len(received) == 3)
