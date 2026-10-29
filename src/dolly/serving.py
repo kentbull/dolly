@@ -754,7 +754,8 @@ class Context(doing.DoDoer):
         for client in tuple(self.clients):
             client.close()
         self.db.close()
-        self.evidence.close()
+        # Dolly owns this shared store, including externally supplied evidence.
+        self.rgy.close()
         self.legacy.reger.close()
         self.sections.close()
 
