@@ -9,7 +9,7 @@ description = "Direct KERI credential reporting and historical evidence inspecti
 requires-python = ">=3.14,<3.15"
 license = "Apache-2.0"
 readme = "README.md"
-dependencies = ["keri @ git+https://github.com/kentbull/keripy.git@d23112ad62282b1c3643faf9851a4a5e18501972"]
+dependencies = ["keri @ git+https://github.com/kentbull/keripy.git@681b8fa192ab4120dcab8c454ecbde1918b90746"]
 
 [project.scripts]
 dolly = "dolly.cli:main"
