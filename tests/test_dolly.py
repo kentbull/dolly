@@ -399,7 +399,7 @@ def test_reopened_dolly_requires_active_observer_observation(tmp_path):
         dolly = context(oldURL)
         try:
             assert dolly.observe(rip.said, report)
-            assert dolly.fresh(rip.said)
+            assert dolly.synchronized(rip.said)
             previous = dolly.db.observed.get((rip.said,))
         finally:
             dolly.close()
@@ -407,12 +407,12 @@ def test_reopened_dolly_requires_active_observer_observation(tmp_path):
         try:
             assert dolly.rgy.store.head(rip.said).qb64 == issued.said
             assert dolly.db.observed.get((rip.said,)) == previous
-            assert not dolly.fresh(rip.said)
+            assert not dolly.synchronized(rip.said)
             # The same authenticated evidence may be observed afresh through
             # the newly configured endpoint, without discarding public history.
             assert dolly.observe(rip.said, report)
             assert dolly.db.observed.get((rip.said,)).observer == newURL
-            assert dolly.fresh(rip.said)
+            assert dolly.synchronized(rip.said)
         finally:
             dolly.close()
             obs.close()
@@ -1073,7 +1073,7 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
             assert received[0]['business'] == {'entitlement': 'use-service', 'private': None}
             assert received[0]['disclosure']['private'] == 'undisclosed'
             assert 'not-negotiated' not in json.dumps(received[0])
-            assert all(dolly.fresh(regid) for regid in (farReg.regk, nearReg.regk, presentationReg.regk))
+            assert all(dolly.synchronized(regid) for regid in (farReg.regk, nearReg.regk, presentationReg.regk))
             assert verifier.kevers[ihab.pre].lastEst.d == ihab.kever.lastEst.d
             assert verifier.kevers[hhab.pre].lastEst.d == hhab.kever.lastEst.d
             admitted, iatc = admit(dhab, 'admit the verified entitlement chain', final)
