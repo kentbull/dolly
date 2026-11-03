@@ -196,7 +196,7 @@ def test_installed_wheel_dual_listener_start_stop_restart_and_local_inspect(tmp_
         credential = acdcmap(israid=issuer.pre, schema=schema.sed,
                              attribute=dict(d='', entitlement='installed-wheel'))
         grants = [grant(issuer, verifier, f'installed {index}', origin=signed(credential, issuer))
-                  for index in range(3)]
+                  for index in range(2)]
         policy = tmp_path / 'policy.json'
         policy.write_text(json.dumps(dict(issuers=[issuer.pre], schemas=[schema.said],
             fields={'entitlement': 'a/entitlement'}, required=['entitlement'],
@@ -291,6 +291,17 @@ def test_installed_wheel_dual_listener_start_stop_restart_and_local_inspect(tmp_
                         assert record['state'] == 'accepted' and record['delivered']
                 else:
                     assert inspect(grants[0][0].said)['delivered']
+                    stale, stale_atc = grant(issuer, verifier, 'stale after restart',
+                        origin=signed(credential, issuer), dt='2000-01-01T00:00:00.000000+00:00')
+                    request = Request(f'http://127.0.0.1:{httpPort}/ingest',
+                        data=stale.raw + stale_atc, headers={'Content-Type': 'application/cesr'})
+                    with urlopen(request, timeout=2) as response:
+                        assert response.status == 202
+                    assert not inspect(stale.said)['delivered']
+                    # Author the later Grant when sending it, within the unchanged
+                    # KRAM receipt window rather than before process startup/restart.
+                    grants.append(grant(issuer, verifier, 'installed 2',
+                                        origin=signed(credential, issuer)))
                     with socket.create_connection(('127.0.0.1', tcpPort)) as connection:
                         connection.sendall(grants[2][0].raw + grants[2][1])
                     waitFor(lambda: len(received) == 3)
@@ -303,6 +314,7 @@ def test_installed_wheel_dual_listener_start_stop_restart_and_local_inspect(tmp_
             with openHby(name=name, temp=False, bran=passcode if encrypted else None,
                          version=Vrsn_2_0) as hby:
                 assert hby.mgr.aeid == aeid  # Starting an unencrypted verifier did not migrate it.
+                assert hby.db.exns.get((stale.said,)) is None
         finally:
             if process is not None and process.poll() is None:
                 process.send_signal(signal.SIGTERM)

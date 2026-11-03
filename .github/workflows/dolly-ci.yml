@@ -1,0 +1,40 @@
+name: Dolly installed tests
+
+on:
+  push:
+    branches: [main, integrate/v2-spec]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install libsodium (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install libsodium
+          echo "DYLD_LIBRARY_PATH=$(brew --prefix libsodium)/lib:$DYLD_LIBRARY_PATH" >> "$GITHUB_ENV"
+      - name: Install locked packages
+        run: |
+          python -m pip install uv==0.9.18
+          uv sync --locked --extra test --no-editable
+          uv pip check
+      - name: Lint
+        run: uv run --no-sync ruff check src tests
+      - name: Run installed entrypoint and tests
+        run: |
+          uv run --no-sync dolly --help
+          uv run --no-sync python -m pytest --import-mode=importlib tests

@@ -15,7 +15,12 @@ dependencies = ["keri @ git+https://github.com/kentbull/keripy.git@633be0b8bbcf1
 dolly = "dolly.cli:main"
 
 [project.optional-dependencies]
-test = ["pytest==9.1.1"]
+test = [
+    "pytest==9.1.1",
+    "ruff==0.15.4",
+    "kf-registrar @ git+https://github.com/kentbull/kf-registrar.git@57dfcf07a8a538736fdccf39d23bee371bcd3c71",
+    "kf-observer @ git+https://github.com/kentbull/kf-observer.git@2b78c3633a0e0524142fec81bc55bf1775c2e123",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
