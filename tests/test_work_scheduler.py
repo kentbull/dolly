@@ -34,7 +34,6 @@ def workContext(records):
     context.hab = object()
     context.acdcV2Ipex = SimpleNamespace(
         _presentationRegistries=lambda serder: [])
-    context.fresh = lambda regid: False
     context.observer = "https://observer.invalid"
     context.observerTrust = object()
     context.webhook = "https://webhook.invalid"
@@ -56,9 +55,8 @@ def test_work_loop_rotates_past_eight_unresponsive_registries(monkeypatch):
     monkeypatch.setattr(serving.exchanging, "verify", lambda hby, exn: None)
     monkeypatch.setattr(serving.exchanging, "loadParsedNestedSubstreams",
                         lambda hby, said: [SimpleNamespace(
-                            serder=SimpleNamespace(regid=said.replace("grant", "registry")),
+                            serder=SimpleNamespace(sad={"rd": said.replace("grant", "registry")}),
                             ssts=[])])
-    monkeypatch.setattr(serving, "issuerRegistry", lambda serder: serder.regid)
     monkeypatch.setattr(serving, "signedQuery",
                         lambda hab, route, query: query["i"])
 

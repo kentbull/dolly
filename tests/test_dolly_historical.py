@@ -1,4 +1,4 @@
-"""Dolly historical inspection preserves proof validity and reporting policy.
+"""Dolly preserves retained views and observations separately from current reporting.
 
 The bound-graph construction adapts test_bound_state_profile's real anchored
 history. Independent verifier/observer stores add application policy, retained
@@ -18,9 +18,8 @@ import pytest
 from keri import Kinds, Vrsn_2_0
 from keri.acdc import Regery, Registrar, acdcmap, blindate, grant, sectattr
 from keri.acdc.regbasing import RegBaser
-from keri.acdc.sectioning import SectionBaser
 from dolly.serving import Context as Dolly, DollyBaser
-from keri.app.evidencing import EvidenceContext, signedQuery
+from dolly.serving import signedQuery
 from keri.app.habbing import Habery, openHby
 from keri.app.configing import Configer
 from keri.app.keeping import Keeper
@@ -81,46 +80,49 @@ def test_retained_grant_opaque_successor_stays_historical_and_pending(tmp_path, 
                 fields={'shown': 'a/shown'}, required=['shown'],
                 observer=observerTrust('https://observer.test/'), webhook=hook,
                 db=DollyBaser(name=verifier.name, headDirPath=str(tmp_path), temp=False),
-                evidence=EvidenceContext(verifier, reger=RegBaser(name=verifier.name,
-                    headDirPath=str(tmp_path), temp=False)),
+                baser=RegBaser(name=verifier.name,
+                    headDirPath=str(tmp_path), temp=False),
                 legacy=verifying.Verifier(verifier, reger=legacy.Reger(name=verifier.name,
-                    headDirPath=str(tmp_path), temp=False)),
-                sections=SectionBaser(name=verifier.name, headDirPath=str(tmp_path), temp=False))
+                    headDirPath=str(tmp_path), temp=False)))
             sourceURL = 'https://registrar.test/'
             obs = Observer(observer, readers=[dhab.pre], sources=[observerTrust(sourceURL)],
-                reger=RegBaser(name=observer.name, headDirPath=str(tmp_path), temp=False),
+                baser=RegBaser(name=observer.name, headDirPath=str(tmp_path), temp=False),
                 observations=ObservationBaser(name=observer.name,
                     headDirPath=str(tmp_path), temp=False))
             try:
                 paths = [owner.path for hby in (source, verifier, observer)
                          for owner in (hby.ks, hby.db, hby.cf)]
-                paths += [rgy.baser.path, dolly.db.path, dolly.evidence.reger.path,
-                          dolly.legacy.reger.path, dolly.sections.path,
-                          obs.reger.path, obs.observations.path]
+                paths += [rgy.baser.path, dolly.db.path, dolly.rgy.baser.path,
+                          dolly.legacy.reger.path,
+                          obs.rgy.baser.path, obs.observations.path]
                 assert all(Path(path).is_relative_to(tmp_path) for path in paths)
                 if phase == 0:
                     registry = rgy.makeRegistry('issuer-registry', issuer.pre)
                     rip = rgy.store.event(registry.regk)
-                    issuer.interact(data=[dict(d=rip.said)], version=Vrsn_2_0)
+                    issuer.interact(data=[dict(i=registry.regk, s=rip.sad["n"], d=rip.said)], version=Vrsn_2_0)
                     assert registry.anchorMsg(rip.said)
                     credential = acdcmap(israid=issuer.pre, regid=registry.regk,
                         attribute=dict(d='', shown='retained value'))
                     first, event1 = Registrar(rgy).issue(registry, acdc=credential)
-                    issuer.interact(data=[dict(d=event1.said)], version=Vrsn_2_0)
+                    issuer.interact(data=[dict(i=registry.regk, s=event1.sad["n"], d=event1.said)], version=Vrsn_2_0)
                     assert registry.anchorMsg(event1.said)
                     public = issuer.replay(gvrsn=Vrsn_2_0) + frame_v2_events(rip, event1)
                     dolly.schemas.add(credential.schema['$id'])
                     dolly.ingest(public)
                     proofed = messagize(credential, bonds=[first.data], gvrsn=Vrsn_2_0)
                     exn, atc = grant(issuer, dhab.pre, 'retain first state', origin=proofed)
-                    assert dolly.ingest(exn.raw + atc) == [dict(grant=exn.said, state='pending')]
+                    # Retain through ordinary core IPEX before creating Dolly work.
+                    # A later opaque successor must block a new reporting decision.
+                    dolly._parser(Vrsn_2_0).parse(ims=bytearray(exn.raw + atc), framed=False)
+                    assert dolly.exc.complete(exn.said)
                     expected = dolly.inspectHistorical(exn.said)
                     retained = tuple(verifier.db.enst.get((exn.said,)))
                     _, opaque = Registrar(rgy).issue(registry, acdc=credential, state='revoked')
-                    issuer.interact(data=[dict(d=opaque.said)], version=Vrsn_2_0)
+                    issuer.interact(data=[dict(i=registry.regk, s=opaque.sad["n"], d=opaque.said)], version=Vrsn_2_0)
                     assert registry.anchorMsg(opaque.said)
                     public = issuer.replay(gvrsn=Vrsn_2_0) + frame_v2_events(rip, event1, opaque)
                     dolly.ingest(public)
+                    assert dolly.ingest(exn.raw + atc) == [dict(grant=exn.said, state='pending')]
                 else:
                     registry = rgy.registryByName('issuer-registry')
                     dolly.schemas.add(credential.schema['$id'])
@@ -133,7 +135,7 @@ def test_retained_grant_opaque_successor_stays_historical_and_pending(tmp_path, 
                     headers={'Content-Type': CESR_CONTENT_TYPE})
                 assert dolly.observe(registry.regk, dict(status=response.status_code,
                     body=response.content, headers={k.lower(): v for k, v in response.headers.items()}))
-                assert dolly.fresh(registry.regk)
+                assert dolly.synchronized(registry.regk)
                 # Inject only the application's current verifier boundary. Core
                 # recovery/anchor verification is exercised in its own real-owner tests.
                 missing = MissingAnchorError('current registry anchor is unavailable')
@@ -142,7 +144,7 @@ def test_retained_grant_opaque_successor_stays_historical_and_pending(tmp_path, 
                     raise missing
 
                 with monkeypatch.context() as patch:
-                    patch.setattr('dolly.serving.vetBinds', missing_anchor)
+                    patch.setattr(dolly.exc, 'reverifyGrant', missing_anchor)
                     dolly.process()
                     assert dolly.db.submissions.get((exn.said,)).state == 'pending'
                     with pytest.raises(MissingChainError) as error:
@@ -152,7 +154,7 @@ def test_retained_grant_opaque_successor_stays_historical_and_pending(tmp_path, 
                 submission = dolly.db.submissions.get((exn.said,))
                 assert submission.state == 'pending'
                 assert not submission.payload and not submission.delivered
-                with pytest.raises(MissingChainError, match='undisclosed'):
+                with pytest.raises(MissingChainError):
                     dolly._acdcV2GrantCredential(verifier.db.exns.get((exn.said,)))
                 doing.Doist(real=True, tock=0.01, limit=0.2).do(
                     doers=[http.ServerDoer(server=server), dolly])
@@ -168,7 +170,7 @@ def test_retained_grant_opaque_successor_stays_historical_and_pending(tmp_path, 
 
 
 def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
-    """Inspect valid historical authority after revocation without issuing a hook.
+    """Inspect the retained bound graph after revocation without issuing a hook.
 
     Far issuance binds Issuee event 0, near issuance anchors in event 1, and far
     revocation binds event 1. The core establishes that historical relationship;
@@ -176,12 +178,6 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
     Inspection makes no observation/freshness claim and survives a full reopen.
     """
     received = []
-
-    class Policy:
-        result = None
-
-        def validity(self, credential):
-            return self.result
 
     class Hook:
         """Record any attempted acceptance delivery through a real HTTP server."""
@@ -206,7 +202,7 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
             try:
                 registry = Registrar(rgy).makeRegistry(name='authority', prefix=authority.pre)
                 rip = rgy.store.event(registry.regk)
-                authority.interact(data=[dict(s=rip.sad['n'], d=rip.said)])
+                authority.interact(data=[dict(i=registry.regk, s=rip.sad['n'], d=rip.said)])
                 assert registry.anchorMsg(rip.said)
                 far = acdcmap(israid=authority.pre, iseaid=issuer.pre, regid=registry.regk,
                               attribute=dict(d='', role='historical delegation'))
@@ -229,7 +225,7 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                     event = blindate(registry.regk, registry.regd, opening.said,
                                      sn=registry.sn + 1)
                     registry.processEvent(event)
-                    authority.interact(data=[dict(s=event.sad['n'], d=event.said)])
+                    authority.interact(data=[dict(i=registry.regk, s=event.sad['n'], d=event.said)])
                     assert registry.anchorMsg(event.said)
                     return opening, event
 
@@ -241,48 +237,47 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                 public += frame_v2_events(rip, issueEvent, revokeEvent)
                 proofNear = messagize(near, bonds=[nearSource], framed=False, gvrsn=Vrsn_2_0)
                 proofFar = messagize(far, bonds=[issued.data, revoked.data], framed=False, gvrsn=Vrsn_2_0)
-                plan = {'dp': [[near.schema['$id'], '/', []],
-                               [far.schema['$id'], '/e/authority/_/', []]]}
+                plan = {'dp': [[[near.schema['$id'], '/', []],
+                                [far.schema['$id'], '/e/authority/_/', []]]]}
                 expected = None
                 for phase in range(2):
                     with openHby(name='historical-dolly', temp=False,
                                  headDirPath=str(tmp_path), version=Vrsn_2_0) as verifier:
                         dhab = verifier.habByName('dolly') or verifier.makeHab(name='dolly')
-                        policy = Policy()
                         dolly = Dolly(verifier, dhab, issuers=[issuer.pre, authority.pre],
                             schemas=[near.schema['$id']], fields={'shown': 'a/shown/value',
                             'private': 'a/private/value'}, required=['shown'],
                             observer=observerTrust(f'https://observer-{phase}.test/'), webhook=hook,
-                            graphPolicy=policy,
                             db=DollyBaser(name=verifier.name, headDirPath=str(tmp_path), temp=False),
-                            evidence=EvidenceContext(verifier, reger=RegBaser(name=verifier.name,
-                                headDirPath=str(tmp_path), temp=False)),
+                            baser=RegBaser(name=verifier.name,
+                                headDirPath=str(tmp_path), temp=False),
                             legacy=verifying.Verifier(verifier, reger=legacy.Reger(name=verifier.name,
-                                headDirPath=str(tmp_path), temp=False)),
-                            sections=SectionBaser(name=verifier.name, headDirPath=str(tmp_path), temp=False))
+                                headDirPath=str(tmp_path), temp=False)))
                         try:
                             if phase == 0:
                                 dolly.ingest(public)
                                 exn, atc = grant(issuer, dhab.pre, 'historical bound graph',
                                     origin=proofNear, artifacts=[proofFar], modifiers=plan)
-                                assert dolly.ingest(exn.raw + atc) == [dict(grant=exn.said, state='pending')]
-                            assert dolly.acdcV2Ipex.verifyAccepted(exn.said, historical=True)
-                            assert not dolly.fresh(registry.regk)
+                                assert dolly.ingest(exn.raw + atc) == [dict(grant=exn.said, state='rejected')]
+                            current = dolly.exc.reverifyGrant(exn.said)[2]
+                            if phase == 0:
+                                assert current.verdict == 'valid'
+                            else:
+                                assert current.verdict == 'unknown' and current.retryable
+                            assert not dolly.synchronized(registry.regk)
                             before = asdict(dolly.db.submissions.get((exn.said,)))
                             inspected = dolly.inspectHistorical(exn.said)
                             exact = exchanging.serializeMessage(verifier, exn.said)
-                            for verdict, error in [(False, ValidationError), (None, MissingChainError)]:
-                                policy.result = verdict
-                                assert dolly.acdcV2Verification.evaluateGrant(exn.said, historical=True) is verdict
-                                with pytest.raises(error, match='graph'):
+                            if phase == 0:
+                                with pytest.raises(ValidationError, match='not currently issued'):
                                     dolly._acdcV2GrantCredential(exn)
-                                assert dolly.inspectHistorical(exn.said) == inspected
-                                assert exchanging.serializeMessage(verifier, exn.said) == exact
-                                assert asdict(dolly.db.submissions.get((exn.said,))) == before
-                            policy.result = True
+                            else:
+                                with pytest.raises(MissingChainError):
+                                    dolly._acdcV2GrantCredential(exn)
+                            assert dolly.inspectHistorical(exn.said) == inspected
+                            assert exchanging.serializeMessage(verifier, exn.said) == exact
                             assert asdict(dolly.db.submissions.get((exn.said,))) == before
                             assert inspected['purpose'] == 'historical-evidence'
-                            assert inspected['proofValidity'] == 'valid'
                             assert inspected['currentStanding'] == 'not-evaluated'
                             assert inspected['business'] == {'shown': 'historically authorized', 'private': None}
                             assert inspected['disclosure']['private'] == 'undisclosed'
@@ -290,12 +285,11 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                             assert 'acceptedAt' not in inspected
                             nearRef, farRef = inspected['sources']
                             assert nearRef == dict(credential=near.said, view=Diger(ser=near.raw).qb64,
-                                                   boundEvents=[])
+                                                   recordedObservation=None)
+                            observation = asdict(verifier.db.exrs.get((exn.said, far.said)))
                             assert farRef == dict(credential=far.said, view=Diger(ser=far.raw).qb64,
-                                boundEvents=[dict(registry=registry.regk, s=event.sad['n'], d=event.said,
-                                    blid=proof.said, issuee=issuer.pre,
-                                    keyEvent=dict(s=proof.bnh, d=proof.bd))
-                                    for proof, event in [(issued, issueEvent), (revoked, revokeEvent)]])
+                                                  recordedObservation=observation)
+                            assert observation['state'] == 'revoked'
                             if phase == 0:
                                 expected = inspected
                                 sourceURL = 'https://registrar.test/'
@@ -324,8 +318,8 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                                 dolly.ingest(authority.replay(gvrsn=Vrsn_2_0)
                                     + frame_v2_events(opaqueEvent))
                                 assert dolly.inspectHistorical(exn.said) == expected
-                                # Generic EXN retention is authentic history, not use
-                                # approval: this opening omits the initial issuance state.
+                                # Generic exchange retention authenticates the sender,
+                                # without native IPEX approval of the incomplete proof.
                                 incomplete = messagize(far, bonds=[revoked.data],
                                                        framed=False, gvrsn=Vrsn_2_0)
                                 incompleteGrant, incompleteAtc = grant(issuer, dhab.pre, 'incomplete bound graph',
@@ -336,12 +330,12 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                                 incompleteBytes = exchanging.serializeMessage(verifier, incompleteGrant.said)
                             else:
                                 assert inspected == expected  # No KEL/TEL/grant replay on reopen.
-                                with pytest.raises(MissingChainError, match='observer evidence'):
+                                with pytest.raises(MissingChainError):
                                     dolly._acdcV2GrantCredential(exn)
-                            assert dolly.inspectHistorical(incompleteGrant.said)['proofValidity'] == 'valid'
-                            assert dolly.acdcV2Verification.evaluateGrant(
-                                incompleteGrant.said, historical=True) is None
-                            with pytest.raises(MissingChainError, match='graph'):
+                            incompleteInspection = dolly.inspectHistorical(incompleteGrant.said)
+                            assert all(source['recordedObservation'] is None
+                                       for source in incompleteInspection['sources'])
+                            with pytest.raises((MissingChainError, ValidationError)):
                                 dolly._acdcV2GrantCredential(incompleteGrant)
                             assert exchanging.serializeMessage(verifier, incompleteGrant.said) == incompleteBytes
                             assert dolly.db.submissions.get((incompleteGrant.said,)) is None

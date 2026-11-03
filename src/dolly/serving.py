@@ -1,9 +1,10 @@
 """Sally-like application policy over ACDC v2 and v1 KERIpy verification.
 
 Composition informed by Sally ed789de (Apache-2.0); cryptographic verification
-remains in Exchanger, ACDC v2 IPEX/Rever, and legacy Tevery/Verifier.
+remains in Exchanger, native Regery/IPEX, and legacy Tevery/Verifier.
 """
 from dataclasses import asdict, dataclass, field
+import json
 import ipaddress
 import math
 from pathlib import Path
@@ -14,28 +15,71 @@ from hio.base import doing
 from hio.core import http, tcp
 
 from keri import Vrsn_1_0, Vrsn_2_0, Kinds
-from keri.acdc import Regery
-from keri.acdc.regeventing import issuerRegistry, vetBinds, vetBlind, vetBound
-from keri.acdc.sectioning import SectionBaser, Sectioner
-from keri.app import ipexing, agenting
+from keri.acdc import Regery, ipexing, chaining
+from keri.app import agenting
 from keri.app.indirecting import createHttpServer
 from dolly.projecting import project
 from keri.app.httping import CESR_CONTENT_TYPE, CESR_ATTACHMENT_HEADER
-from keri.app.evidencing import EvidenceContext, KEL_DEPENDENCIES, signedQuery
-from keri.core import Parser, SerderACDC, SerderKERI, Serdery, GenDex, Revery, BoundState, Diger
+from keri.core import (Parser, SerderACDC, SerderKERI, Serdery, GenDex, Revery,
+                       Diger, Kevery, Number, NumDex, Schemer, query as makeQuery)
+from keri.core.kraming import Pruner
 from keri.db import dbing, koming
 from keri.db.basing import BaserDoer
+from keri.db.dbing import snKey
 from keri.help import helping
 from keri.kering import (ValidationError, ExtractionError, ShortageError, MissingChainError, MissingSchemaError,
                          MissingRegistryError, MissingAnchorError, MissingSenderKeyStateError,
-                         MissingBlindError)
+                         MissingSignatureError, MissingWitnessSignatureError,
+                         MissingDelegationError, OutOfOrderError, MissingDelegableApprovalError,
+                         UnverifiedReceiptError, UnverifiedWitnessReceiptError,
+                         UnverifiedTransferableReceiptError)
 from keri.peer import exchanging
 from keri.vdr import verifying, eventing as legacyEventing
+from keri.vc import protocoling
 
 
 MAX_OUTBOUND_REQUESTS_PER_TURN = 8
 OUTBOUND_RETRY_INITIAL = 5.0
 OUTBOUND_RETRY_MAXIMUM = 300.0
+
+
+KEL_DEPENDENCIES = (MissingSignatureError, MissingWitnessSignatureError,
+    MissingDelegationError, OutOfOrderError, MissingDelegableApprovalError,
+    UnverifiedReceiptError, UnverifiedWitnessReceiptError, UnverifiedTransferableReceiptError)
+
+
+class _RequestPolicy:
+    """Configure Dolly's authenticated native requests without denial exemptions."""
+    def get(self):
+        return {'kram': {'enabled': True, 'denials': [],
+            'caches': {'~': [1000, 5000, 60000, 300000, 5000, 60000, 300000]}}}
+
+
+def signedQuery(hab, route, attributes=None):
+    """Sign one native observer query using this application's habitat."""
+    serder = makeQuery(pre=hab.pre, route=route, query=attributes or {},
+                   stamp=helping.nowIso8601(), version=Vrsn_2_0)
+    return bytes(hab.endorse(serder, last=True, framed=False, gvrsn=Vrsn_2_0))
+
+
+class DollyExchanger(exchanging.Exchanger):
+    """Select genuine v1 and native v2 IPEX handlers with one escrow owner."""
+    def __init__(self, hby, rgy):
+        super().__init__(hby, handlers=[])
+        notices = Notices()
+        ipexing.loadHandlers(hby, self, notices, rgy=rgy)
+        self.legacyRoutes = {route: protocoling.IpexHandler(route, hby, notices)
+                             for route in self.routes}
+
+    def handlerFor(self, serder):
+        """Choose the message's exact protocol lane before evidence hooks run."""
+        route = serder.route
+        if route in self.legacyRoutes:
+            if serder.pvrsn == Vrsn_1_0:
+                return self.legacyRoutes[route]
+            if serder.pvrsn != Vrsn_2_0:
+                raise ValidationError('unsupported IPEX protocol version')
+        return super().handlerFor(serder)
 
 
 @dataclass
@@ -192,24 +236,17 @@ def rotated(items, cursor, limit, *, key=lambda item: item):
 class Context(doing.DoDoer):
     """Compose core verification with explicit reporting, projection, and delivery.
 
-    One section owner and enabled KRAM owner serve both direct transports.
+    One native registry owner and enabled KRAM owner serve both direct transports.
     Historical inspection is separate from current reporting policy."""
     def __init__(self, hby, hab, *, issuers, schemas, fields, required=(),
                  observer, webhook, maximumAge=15.0, timeout=5.0,
-                 db=None, evidence=None, legacy=None, legacySources=(), graphPolicy=None,
-                 sections=None):
-        """Compose verification, section evidence, reporting, and delivery owners.
+                 db=None, baser=None, legacy=None, legacySources=()):
+        """Own ordinary KEL/native TEL/IPEX and legacy processors once.
 
-        ``hby`` and ``hab`` supply the identity; issuers/schemas and field paths
-        define reporting policy. ``observer`` supplies its HTTPS URL, explicit
-        CA bundle, and optional expected certificate hostname. Webhook URL and
-        positive finite maximumAge/timeout configure delivery and freshness.
-        Optional db/evidence/legacy/sections stores support persistent reopen;
-        this context closes them. The shared SectionBaser feeds parser intake
-        and graphPolicy-aware ACDC v2 IPEX verification, without expanding retained
-        credential projections. EvidenceContext is scheduled once as a child,
-        owning its single KRAM pruner until cancellation. Invalid timeouts
-        raise ValueError.
+        ``baser`` is the native RegBaser; legacy.reger retains independent sections.
+        Exact Grant views stay in Baser.enst. One enabled KRAM pruner shares the
+        application's processor lifecycle. maximumAge applies only to v1 TSN
+        observations; timeout bounds outbound observer/webhook requests.
         """
         if any(not math.isfinite(value) or value <= 0 for value in (maximumAge, timeout)):
             raise ValueError('Dolly freshness and request timeouts must be finite and positive')
@@ -223,30 +260,27 @@ class Context(doing.DoDoer):
         self._registryCursor = self._deliveryCursor = None
         self.legacySources = tuple(legacySources)
         self.db = db if db is not None else DollyBaser(name=hby.name, base=hby.base, temp=hby.temp)
-        self.evidence = evidence if evidence is not None else EvidenceContext(hby)
-        self.rgy = Regery(hby, name=hby.name, baser=self.evidence.reger)
+        self.kvy = Kevery(db=hby.db, cf=_RequestPolicy(), enableKram=True,
+                          lax=False, local=False)
+        self.rgy = Regery(hby, name=hby.name, base=hby.base, temp=hby.temp, baser=baser)
+        self.pruner = Pruner(self.kvy.kramer, tock=1.0)
         self.legacy = legacy if legacy is not None else verifying.Verifier(hby,
             reger=legacyEventing.Reger(name=hby.name, base=hby.base, temp=hby.temp))
         self.rvy = Revery(db=hby.db)
-        self.evidence.kvy.rvy = self.rvy
-        self.evidence.kvy.registerReplyRoutes(self.rvy.rtr)
+        self.kvy.rvy = self.rvy
+        self.kvy.registerReplyRoutes(self.rvy.rtr)
         self.legacy.tvy.rvy = self.rvy
         self.legacy.tvy.registerReplyRoutes(self.rvy.rtr)
         self.inquisitor = agenting.WitnessInquisitor(hby=hby)
-        self.exc = exchanging.Exchanger(hby, handlers=[])
-        self.sections = sections if sections is not None else SectionBaser(
-            name=hby.name, base=hby.base, temp=hby.temp)
-        self.scy = Sectioner(db=hby.db, sections=self.sections)
-        self.acdcV2Verification = ipexing.loadHandlers(
-            hby, self.exc, Notices(), self.rgy,
-            graphPolicy=graphPolicy, sections=self.sections)
-        self.acdcV2Ipex = self.exc.routes['/ipex/grant'].acdcV2
+        self.exc = DollyExchanger(hby, self.rgy)
+        self.acdcV2Ipex = self.exc.routes['/ipex/grant']
+        self._promoteSchemas()
         self.app = falcon.App()
         self.app.add_route('/ingest', IntakeEnd(self))
         self.app.add_route('/', IntakeEnd(self))
         self.app.add_route('/health', HealthEnd())
         self.clients = set()
-        super().__init__(doers=[self.evidence, self.inquisitor, doing.doify(self.workDo)])
+        super().__init__(doers=[self.pruner, self.inquisitor, doing.doify(self.workDo)])
 
     def _parser(self, version, *, stream=False):
         """Return a parser sharing this context's processors and section owner.
@@ -257,9 +291,9 @@ class Context(doing.DoDoer):
         """
         klass = StreamParser if stream else Parser
         extra = {"context": self} if stream else {}
-        return klass(**extra, kvy=self.evidence.kvy, rgy=self.evidence.rever,
+        return klass(**extra, kvy=self.kvy, rgy=self.rgy,
             tvy=self.legacy.tvy, vry=self.legacy, exc=self.exc, rvy=self.rvy,
-            scy=self.scy, local=False, version=version)
+            local=False, version=version)
 
     def ingest(self, raw, version=Vrsn_2_0):
         """Dispatch CESR evidence and return states for grants received in raw.
@@ -274,7 +308,7 @@ class Context(doing.DoDoer):
         parser, ims, received = self._parser(version), bytearray(raw), []
         while ims:
             size = len(ims)
-            dom = parser.parseOne(ims=ims, processive=False, local=False)
+            dom = parser.parseOneBare(ims=ims, processive=False, local=False)
             if dom is None or dom.serder is None or len(ims) >= size:
                 raise ValidationError('incomplete credential evidence stream')
             if (said := self.dispatch(parser, asdict(dom))) is not None:
@@ -296,200 +330,168 @@ class Context(doing.DoDoer):
         if serder.ilk in ('vcp', 'vrt', 'iss', 'bis', 'rev', 'brv'):
             if self.legacy.reger.tels.get(keys=serder.pre, on=serder.sn) == serder.said:
                 return None  # Exact already-verified legacy TEL replay.
-        if serder.ilk == 'exn' and serder.route == '/ipex/grant':
+        if serder.ilk in ('xip', 'exn') and serder.route == '/ipex/grant':
             recipient = serder.sad.get('ri') if serder.pvrsn.major == 2 else serder.sad['a'].get('i')
             if recipient != self.hab.pre:
                 raise ValidationError('grant is addressed to a different disclosee')
             registries = sorted({regid for item in exts.get('nests', [])
-                                 if (regid := issuerRegistry(item['serder']))})
+                                 if (regid := item['serder'].sad.get('rd'))})
             submission = Submission(serder.said, registries)
             submitted = serder.said
         try:
-            Parser.msgProcess(parser, exts, kvy=self.evidence.kvy, rgy=self.evidence.rever,
-                tvy=self.legacy.tvy, vry=self.legacy, exc=self.exc, rvy=self.rvy, scy=self.scy)
+            Parser.msgProcess(parser, exts, kvy=self.kvy,
+                tvy=self.legacy.tvy, vry=self.legacy, exc=self.exc, rvy=self.rvy)
         except KEL_DEPENDENCIES + (MissingChainError, MissingSchemaError):
             pass  # Concrete processors already retained their dependencies.
+        self._promoteSchemas()
         # Missing bootstrap raises before KRAM retains this request. Do not
         # manufacture a pending row that would survive a refused HTTP request.
         if submission is not None:
             self.db.submissions.put((submitted,), submission)
         return submitted
 
-    def fresh(self, regid):
-        """Return whether regid has a matching fresh report from the current observer.
+    def _promoteSchemas(self):
+        """Cache verified expanded JSON schema documents held by ordinary section intake.
 
-        A different configured URL, missing/moved local head, future timestamp,
-        or report older than maximumAge fails freshness. No global latest-state
-        inference follows from this application observation."""
+        Other section kinds stay held material. Non-JSON schema commitments are
+        not transcoded into a different $id, and no held section expands enst.
+        """
+        for _, message in self.legacy.reger.sections.getTopItemIter():
+            if message.ilk != 'sch' or message.kind != Kinds.json:
+                continue
+            if not message.verify():
+                raise ValidationError('held schema section has invalid commitments')
+            document = message.sad.get('s')
+            if not isinstance(document, dict):
+                continue
+            schemer = Schemer(raw=json.dumps(document, separators=(',', ':'),
+                                             ensure_ascii=False).encode())
+            if schemer.said != document.get('$id'):
+                raise ValidationError('held schema $id does not match its document')
+            self.hby.db.schema.pin((schemer.said,), schemer)
+
+    def synchronized(self, regid):
+        """Report configured-source/head correspondence, without an age or validity claim."""
         record = self.db.observed.get((regid,))
         head = self.rgy.store.head(regid)
-        if (record is None or record.observer != self.observer
-                or head is None or record.head != head.qb64):
-            return False
-        age = (helping.nowUTC() - helping.fromIso8601(record.observed)).total_seconds()
-        return 0 <= age <= self.maximumAge
+        return bool(record and record.observer == self.observer
+                    and head and record.head == head.qb64)
 
     def observe(self, regid, response):
-        """Retain one fresh configured-observer report only after local proof validation.
+        """Record source telemetry only after all supplied public evidence accepts.
 
-        Args:
-            regid (str): Registry whose advertised head must independently verify.
-            response (dict): HTTP status, headers, and exact public KEL/TEL body returned
-            by the context's configured observer request.
-
-        Returns:
-            bool: True after persisting this source's observation marker; False for
-            unsuccessful/stale/malformed metadata, pending/rejected evidence, or a head
-            mismatch. A successful HTTP response alone supplies no observation authority.
-
-        The evidence owner may retain authenticated KEL/TEL while a response fails the
-        observation policy. Store/unexpected decoding errors propagate; no credential
-        view or wallet admission is created by this freshness operation."""
-        headers = response.get('headers', {})
-        if (response['status'] != 200 or headers.get('observer-evidence-state') != 'fresh'
-                or headers.get('content-type', '').split(';')[0] != CESR_CONTENT_TYPE):
+        TLS identity belongs to request(). Neither remote freshness headers nor
+        local observation time authorize reporting. Match the highest accepted
+        head actually carried by this response, never a newer unrelated cache row.
+        """
+        if (response['status'] != 200 or response.get('headers', {}).get(
+                'content-type', '').split(';')[0] != CESR_CONTENT_TYPE):
             return False
-        stamp, head = headers.get('observer-observed-at'), headers.get('observer-registry-head')
+        ims, events = bytearray(response['body']), []
+        parser = self._parser(Vrsn_2_0)
         try:
-            age = (helping.nowUTC() - helping.fromIso8601(stamp)).total_seconds()
-        except (ValueError, TypeError):
+            while ims:
+                size = len(ims)
+                dom = parser.parseOneBare(ims=ims, processive=False, local=False)
+                if dom is None or dom.serder is None or len(ims) >= size:
+                    return False
+                event = dom.serder
+                if event.ilk not in ('rip', 'bup', 'icp', 'dip', 'rot', 'drt', 'ixn', 'rct'):
+                    return False
+                events.append(event)
+            self.ingest(response['body'])
+        except (ValidationError, ExtractionError, ValueError, TypeError):
             return False
-        if not 0 <= age <= self.maximumAge:
+        heads = []
+        for event in events:
+            if isinstance(event, SerderACDC):
+                registry = event.said if event.ilk == 'rip' else event.sad['rd']
+                sequence = Number(numh=event.sad['n']).num
+                accepted = self.rgy.store.seqSaider(registry, sequence)
+                if accepted is None or accepted.qb64 != event.said:
+                    return False
+                if registry == regid:
+                    heads.append((sequence, event.said))
+            elif event.ilk != 'rct' and self.hby.db.kels.getLast(
+                    keys=event.pre, on=event.sn) != event.said:
+                return False
+            elif event.ilk == 'rct' and self._receiptPending(event):
+                return False
+        head = self.rgy.store.head(regid)
+        if not heads or head is None or max(heads)[1] != head.qb64:
             return False
-        result = self.evidence.ingest(response['body'])
-        accepted = self.rgy.store.head(regid)
-        if (result['rejected'] or result['pending'] or accepted is None
-                or accepted.qb64 != head or result['heads'].get(regid) != head):
-            return False
-        self.db.observed.pin((regid,), Observation(stamp, head, self.observer))
+        self.db.observed.pin((regid,), Observation(helping.nowIso8601(), head.qb64, self.observer))
         return True
 
+    def _receiptPending(self, event):
+        """Match unresolved receipts from this response, rather than global escrow counts."""
+        db = self.hby.db
+        if any(said == event.said for said, _ in db.uwes.get(keys=event.pre, on=event.sn)):
+            return True
+        receipts = db.ures.get(keys=(event.pre, Number(num=event.sn, code=NumDex.Huge).qb64))
+        receipts += db.vres.get(keys=snKey(event.pre, event.sn))
+        return any(receipt[0].qb64 == event.said for receipt in receipts)
+
     def _acdcV2GrantCredential(self, exn):
-        """Return the retained origin credential, or None for an empty grant.
+        """Recheck exact retained proof, then apply Dolly's current issued-state policy."""
+        try:
+            _, nests, verdict, records = self.exc.reverifyGrant(exn.said)
+        except (MissingAnchorError, MissingSenderKeyStateError) as error:
+            raise MissingChainError(str(error)) from error
+        if verdict is None:
+            raise ValidationError('ACDC v2 Grant verification refused')
+        if verdict.verdict == chaining.Verdicts.unknown and verdict.retryable:
+            raise MissingChainError(verdict.reason)
+        if verdict.verdict != chaining.Verdicts.valid:
+            raise ValidationError(verdict.reason)
+        for nest in nests:
+            credential = nest.serder
+            if not credential.sad.get('rd'):
+                continue
+            state = records.get(credential.said)
+            if state is None:
+                raise MissingChainError('current registry state is not authenticated')
+            if state.state != 'issued':
+                raise ValidationError('credential is not currently issued')
+        return self._acdcV2GrantDisclosure(exn, nests)[0]
 
-        ``exn`` is the accepted ACDC v2 IPEX grant. Require explicit semantic
-        approval before making any application decision, then apply current standing to
-        every disclosed node. Missing evidence remains retryable; invalid proof
-        or current standing raises ValidationError. Selection never resolves a
-        fuller cached disclosure in place of this grant's retained material.
-        """
-        credential, nests = self._acdcV2GrantDisclosure(exn)
-        if credential is not None:
-            result = self.acdcV2Verification.evaluateGrant(exn.said, historical=True)
-            if result is None:
-                raise MissingChainError('ACDC v2 graph evaluation is unresolved')
-            if result is not True:
-                raise ValidationError('ACDC v2 graph policy refuses current reporting')
-            self._acdcV2CurrentStanding(nests)
-        return credential
-
-    def _acdcV2GrantDisclosure(self, exn):
-        """Return the core-verified retained origin and its disclosed graph nodes.
-
-        ``exn`` must name a retained ACDC v2 IPEX grant. Empty disclosures return
-        (None, []). Invalid authentication/proofs raise ValidationError; unavailable
-        dependencies retain their core exception. This boundary applies no
-        Dolly current-reporting or observation policy and never expands a view.
-        """
-        if not self.acdcV2Ipex.verifyAccepted(exn.said, historical=True):
-            raise ValidationError('ACDC v2 IPEX proof authentication failed')
+    def _acdcV2GrantDisclosure(self, exn, nests=None):
+        """Select the exact retained origin, without asserting current proof validity."""
         origins = exn.sad['a']['o']
         if not origins:
             return None, []
-        nests = exchanging.loadParsedNestedSubstreams(self.hby, exn.said)
-        return next(nest.serder for nest in nests if nest.serder.said == origins[0]), nests
+        if nests is None:
+            nests = exchanging.loadParsedNestedSubstreams(self.hby, exn.said)
+        origin = next((nest.serder for nest in nests if nest.serder.said == origins[0]), None)
+        if origin is None:
+            raise ValidationError('retained Grant has no disclosed origin')
+        return origin, nests
 
     def inspectHistorical(self, grant):
-        """Inspect a retained authenticated ACDC v2 IPEX grant without reporting it.
+        """Inspect retained views and recorded observations without rechecking current validity.
 
-        ``grant`` is its EXN SAID. Return selected retained values, disclosure
-        facts, exact view references and authenticated bound-event references.
-        Empty grants have no credential or business projection. This explicit
-        historical-evidence purpose makes no current-standing, freshness, or
-        independent publication-time claim; it creates no submission, policy
-        acceptance, timestamp, or hook. Reporting allowlists and required fields
-        apply to current reporting; inspection uses only configured field paths.
-
-        Unknown or non-ACDC-v2 grants or invalid proofs raise ValidationError;
-        unavailable authentication dependencies retain their core exception.
-        Current graph policy does not authorize or invalidate historical inspection.
+        No reporting decision, fresh authority, or hook follows from this display.
+        Independent cached sections never expand the retained disclosure.
         """
         exn = self.hby.db.exns.get((grant,))
-        if exn is None or exn.pvrsn.major != 2 or exn.route != '/ipex/grant':
+        if exn is None or exn.pvrsn != Vrsn_2_0 or exn.route != '/ipex/grant':
             raise ValidationError('historical inspection requires a retained ACDC v2 IPEX grant')
         credential, nests = self._acdcV2GrantDisclosure(exn)
         values, disclosure = project(credential, self.fields) if credential else ({}, {})
-        return dict(purpose='historical-evidence', proofValidity='valid',
-            currentStanding='not-evaluated', grant=grant,
+        return dict(purpose='historical-evidence', currentStanding='not-evaluated', grant=grant,
             credential=credential.said if credential else None,
-            business=values, disclosure=disclosure, sources=self._historicalSources(nests))
+            business=values, disclosure=disclosure, sources=self._historicalSources(grant, nests))
 
-    def _historicalSources(self, nests):
-        """Reference only exact retained node views and authenticated bound events.
-
-        ``nests`` are already core-verified grant nodes. Each result identifies
-        its node and serialized disclosure view. Bound references additionally
-        require a matching accepted TEL bup, its exact BLID opening, and the
-        accepted Issuee KEL event. Missing/invalid evidence raises the existing
-        core error. Never infer a reference from a receiver clock or a cache's
-        latest head, and never include opening nonces or cached fuller bodies.
-        """
+    def _historicalSources(self, grant, nests):
+        """Identify exact retained views and optional five-field recorded observations."""
         sources = []
         for nest in nests:
             credential = nest.serder
-            bound = []
-            proofs = [proof for proof in self.acdcV2Ipex._blindProofs(nest)
-                      if proof.clan == BoundState and proof.acdc == credential.said]
-            if proofs and (regid := self.acdcV2Ipex._graphRegistry(credential, nest)):
-                _, events = self.acdcV2Ipex._registryEvidence(
-                    regid, proofs=self.acdcV2Ipex._blindProofs(nest),
-                    target=credential.said, acdc=credential)
-                for event in events:
-                    for proof in proofs:
-                        if event.ilk != 'bup' or event.sad['b'] != proof.said:
-                            continue
-                        vetBlind(proof, blid=event.sad['b'])
-                        keyEvent = vetBound(proof, acdc=credential, db=self.hby.db)
-                        if keyEvent is not None:
-                            bound.append(dict(registry=regid, s=event.sad['n'], d=event.said,
-                                blid=proof.said, issuee=credential.iseaid,
-                                keyEvent=dict(s=proof.bnh, d=keyEvent.said)))
+            record = self.hby.db.exrs.get((grant, credential.said))
             sources.append(dict(credential=credential.said,
-                view=Diger(ser=credential.raw).qb64, boundEvents=bound))
+                view=Diger(ser=credential.raw).qb64,
+                recordedObservation=asdict(record) if record is not None else None))
         return sources
-
-    def _acdcV2CurrentStanding(self, nests):
-        """Require current standing for every node in retained parsed ``nests``.
-
-        Historical bound-edge validity remains the ACDC v2 IPEX verifier's decision.
-        This additional application rule uses the configured current observer.
-        Return None after all nodes pass; raise MissingChainError for stale or
-        absent observations, or ValidationError for a node no longer issued.
-        """
-        for nest in nests:
-            credential = nest.serder
-            declared = issuerRegistry(credential)
-            registries = ({declared} if declared else {pre.qb64 for pre, _, _ in nest.ssts
-                if pre.qb64 != credential.israid and pre.qb64 not in self.hby.kevers})
-            for regid in registries:
-                if not self.fresh(regid):
-                    raise MissingChainError('observer evidence is missing or stale')
-                evidence = self.acdcV2Ipex._registryEvidence(regid)
-                if evidence is None:
-                    raise MissingChainError('current registry evidence is missing')
-                try:
-                    state = vetBinds(*evidence, db=self.hby.db,
-                        blinders=self.acdcV2Ipex._blindProofs(nest),
-                        target=credential.said, acdc=credential)
-                except MissingBlindError as error:
-                    raise MissingChainError('current registry state is undisclosed') from error
-                except MissingAnchorError as error:
-                    raise MissingChainError('current registry anchor evidence is missing') from error
-                if state.state != 'issued':
-                    raise ValidationError('credential is not currently issued')
-            for _, regid in self.acdcV2Ipex._presentationRegistries(credential) or []:
-                if not self.fresh(regid):
-                    raise MissingChainError('presentation registry observation is missing or stale')
 
     def _legacyCredential(self, exn):
         """Return a core-verified legacy credential only with fresh source standing.
@@ -596,13 +598,13 @@ class Context(doing.DoDoer):
         and configured credential projections accepted. Terminal decisions are
         skipped on later turns and reopen. HTTP delivery belongs to workDo.
         """
-        self.evidence.kvy.processEscrows()
-        self.evidence.rever.processEscrows()
+        self.kvy.processEscrows()
+        self.rgy.processEscrows()
         self.legacy.tvy.processEscrows()
         self.legacy.processEscrows()
         self.rvy.processEscrowReply()
         self._legacyReports()
-        self.scy.processEscrows()
+        self._promoteSchemas()
         self.exc.processEscrow()
         for keys, record in self.db.submissions.getTopItemIter():
             if record.state != 'pending' or not self.exc.complete(record.grant):
@@ -698,16 +700,14 @@ class Context(doing.DoDoer):
                 except ValidationError:
                     continue
                 for nest in exchanging.loadParsedNestedSubstreams(self.hby, exn.said):
-                    if (regid := issuerRegistry(nest.serder)) and not self.fresh(regid):
+                    if (regid := nest.serder.sad.get('rd')):
                         registries.add(regid)
                     registries.update(regid for _, regid in
-                        self.acdcV2Ipex._presentationRegistries(nest.serder) or []
-                        if not self.fresh(regid))
+                        self.acdcV2Ipex._presentationRegistries(nest.serder) or [])
                     # Nonissuer source triples are untrusted fetch hints until
                     # the core validates their exact accepted TEL event.
                     registries.update(pre.qb64 for pre, _, _ in nest.ssts
-                        if pre.qb64 != nest.serder.israid and pre.qb64 not in self.hby.kevers
-                        and not self.fresh(pre.qb64))
+                        if pre.qb64 != nest.serder.israid and pre.qb64 not in self.hby.kevers)
             selected, self._registryCursor = rotated(
                 registries, self._registryCursor,
                 registryBudget)
@@ -758,7 +758,7 @@ class Context(doing.DoDoer):
                 yield tock
 
     def close(self):
-        """Close HTTP clients and owned stores, including independent sections.
+        """Close HTTP clients and the native, legacy/section, and application stores.
 
         Reopening requires a fresh context over the same configured stores.
         Habery ownership remains with the caller.
@@ -766,9 +766,8 @@ class Context(doing.DoDoer):
         for client in tuple(self.clients):
             client.close()
         self.db.close()
-        self.evidence.close()
+        self.rgy.close()
         self.legacy.reger.close()
-        self.sections.close()
 
 
 class IntakeEnd:
@@ -962,8 +961,8 @@ def setup(hby, hab, *, host='127.0.0.1', port=6644, tcpPort=None,
     owns only connection-local parser generators; shutdown reverses that order.
     """
     context = Context(hby, hab, **kwa)
-    doers = [BaserDoer(baser=context.db), BaserDoer(baser=context.evidence.reger),
-             BaserDoer(baser=context.legacy.reger), BaserDoer(baser=context.sections), context]
+    doers = [BaserDoer(baser=context.db), BaserDoer(baser=context.rgy.baser),
+             BaserDoer(baser=context.legacy.reger), context]
     if port is not None:
         server = createHttpServer(host=host, port=port, app=context.app,
                                   keypath=keypath, certpath=certpath, cafilepath=cafilepath)
