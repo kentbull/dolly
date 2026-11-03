@@ -7,6 +7,14 @@ delivery. ACDC v2 IPEX requires KRAM; v1 follows its established verification pa
 Use Python 3.14 and the dependency pinned in `pyproject.toml`. After installation,
 run `dolly --help` for commands. Component tests remain in `tests/`.
 
+For the installed test environment, use `uv` 0.9.18 and run
+`uv sync --locked --extra test --no-editable`, followed by `uv pip check`,
+`uv run --no-sync ruff check src tests`, and
+`uv run --no-sync python -m pytest --import-mode=importlib tests`.
+The test extra includes the pinned Registrar and Observer services used by the
+real HTTP integration tests. CI runs these commands on Linux and macOS without
+a source-path override.
+
 Detailed operator guides, qualification records and lineage ledgers belong to
 the independent `keri-v2` experiment workspace. In-code attribution and LICENSE /
 NOTICE remain here. This package makes no universal conformance or production
