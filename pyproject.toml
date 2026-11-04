@@ -9,7 +9,7 @@ description = "Direct KERI credential reporting and historical evidence inspecti
 requires-python = ">=3.14,<3.15"
 license = "Apache-2.0"
 readme = "README.md"
-dependencies = ["keri @ git+https://github.com/kentbull/keripy.git@633be0b8bbcf1a9a7076dee6f4760792f2f9e362"]
+dependencies = ["keri @ git+https://github.com/kentbull/keripy.git@df627757e9c963981f811a640f0ad20e5b7e985e"]
 
 [project.scripts]
 dolly = "dolly.cli:main"
@@ -18,8 +18,8 @@ dolly = "dolly.cli:main"
 test = [
     "pytest==9.1.1",
     "ruff==0.15.4",
-    "kf-registrar @ git+https://github.com/kentbull/kf-registrar.git@57dfcf07a8a538736fdccf39d23bee371bcd3c71",
-    "kf-observer @ git+https://github.com/kentbull/kf-observer.git@2b78c3633a0e0524142fec81bc55bf1775c2e123",
+    "kf-registrar @ git+https://github.com/kentbull/kf-registrar.git@f3939b036bcde980a0919f59f82b1ba7ef28e0d2",
+    "kf-observer @ git+https://github.com/kentbull/kf-observer.git@66797a8850d6417e832ec9d19d1c4e27430a6439",
 ]
 
 [tool.setuptools.packages.find]
