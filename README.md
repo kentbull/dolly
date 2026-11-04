@@ -32,15 +32,26 @@ Grant through KERIpy and requires every disclosed issuer-registry node to have
 an authenticated `issued` state before reporting. Conventional v1 TSN source
 and timing policy remains separate. No observation is a global-latest claim.
 
-Native composition is pinned to KERIpy `633be0b8bbcf1a9a7076dee6f4760792f2f9e362`.
+Native composition uses the complete KERIpy commit pinned in `pyproject.toml`.
 One application-owned Kevery/Regery/Parser and KRAM pruner serve HTTP and TCP;
 one Exchanger selects native v2 or genuine v1 IPEX handlers per message.
 Historical inspection displays exact retained views and optional `exrs`
 recorded observations, with no current-validity claim. Expanded JSON schema
 sections enter the ordinary schema cache on intake/startup; other sections
 never expand a retained Grant. Non-JSON schema sections stay held without
-transcoding their IDs. Admit-triggered reporting and Unblind acquisition are
-separate follow-up work; this unit adds neither gate.
+transcoding their IDs.
+
+For individual native presentations, Dolly requests missing issuer openings only
+once the configured observer's public evidence accepts and the exact disclosed
+view meets application policy. The process owns one approved, frozen Unblind
+query; a changed public head or expired/terminated transaction cannot renew it.
+An interrupted request needs a fresh presentation after restart. Ordinary native
+Grant verification and the `issued` policy run again after the reply. Reporting
+then requires the exact locally accepted Admit; its SAID appears as `admit` in
+the webhook payload. Dolly submits that same retained Admit through authenticated
+controller, agent, mailbox or witness routing. `admitSubmitted` records transport
+submission; `delivered` records webhook acknowledgement. Neither proves the
+presenter's receipt, and lost acknowledgements may cause retransmission.
 
 | Prior test requirement | Selected native contract / retained coverage |
 | --- | --- |
