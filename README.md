@@ -2,7 +2,8 @@
 
 Dolly is an R&D credential reporting service using KERIpy for KERI/ACDC
 verification. It supports direct HTTP/TCP intake and policy-controlled webhook
-delivery. ACDC v2 IPEX requires KRAM; v1 follows its established verification path.
+delivery. V2 ACDC/IPEX requires KRAM; unsupported protocol versions are
+rejected before processor dispatch.
 
 Use Python 3.14 and the dependency pinned in `pyproject.toml`. After installation,
 run `dolly --help` for commands. Component tests remain in `tests/`.
@@ -29,12 +30,12 @@ not follow observer redirects. This authenticates the configured response hop;
 local KERI/ACDC verification determines authentication. Native observer headers
 and observation age do not grant authority. Dolly rechecks each exact retained
 Grant through KERIpy and requires every disclosed issuer-registry node to have
-an authenticated `issued` state before reporting. Conventional v1 TSN source
-and timing policy remains separate. No observation is a global-latest claim.
+an authenticated `issued` state before reporting. No observation is a
+global-latest claim.
 
-Native composition uses the complete KERIpy commit pinned in `pyproject.toml`.
+V2 KERI/IPEX composition uses the complete KERIpy commit pinned in `pyproject.toml`.
 One application-owned Kevery/Regery/Parser and KRAM pruner serve HTTP and TCP;
-one Exchanger selects native v2 or genuine v1 IPEX handlers per message.
+one ordinary Exchanger owns the v2 IPEX handlers.
 Historical inspection displays exact retained views and optional `exrs`
 recorded observations, with no current-validity claim. Expanded JSON schema
 sections enter the ordinary schema cache on intake/startup; other sections
