@@ -193,9 +193,9 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "keri", git = "https://github.com/kentbull/keripy.git?rev=f08d23d2327eff99b812754f76fc10d35e427a1c" },
-    { name = "kf-observer", marker = "extra == 'test'", git = "https://github.com/kentbull/kf-observer.git?rev=ae7af7bb8683dba3e1357df6969568589ecf2d3c" },
-    { name = "kf-registrar", marker = "extra == 'test'", git = "https://github.com/kentbull/kf-registrar.git?rev=9de1cfa3b5ad858603f0e5290c9def798ecd2b8d" },
+    { name = "keri", git = "https://github.com/kentbull/keripy.git?rev=6673c19fe92e17f169d5c0cad4bf0da0ba26874d" },
+    { name = "kf-observer", marker = "extra == 'test'", git = "https://github.com/kentbull/kf-observer.git?rev=dcd4fbe8d1460614b7556358caf56c2737ea71d4" },
+    { name = "kf-registrar", marker = "extra == 'test'", git = "https://github.com/kentbull/kf-registrar.git?rev=99d38ca7aa2c4ac2e601de7c5ca03bdf2a22d427" },
     { name = "pytest", marker = "extra == 'test'", specifier = "==9.1.1" },
     { name = "ruff", marker = "extra == 'test'", specifier = "==0.15.4" },
 ]
@@ -298,7 +298,7 @@ wheels = [
 [[package]]
 name = "keri"
 version = "2.1.0.dev1"
-source = { git = "https://github.com/kentbull/keripy.git?rev=f08d23d2327eff99b812754f76fc10d35e427a1c#f08d23d2327eff99b812754f76fc10d35e427a1c" }
+source = { git = "https://github.com/kentbull/keripy.git?rev=6673c19fe92e17f169d5c0cad4bf0da0ba26874d#6673c19fe92e17f169d5c0cad4bf0da0ba26874d" }
 dependencies = [
     { name = "apispec" },
     { name = "blake3" },
@@ -328,7 +328,7 @@ dependencies = [
 [[package]]
 name = "kf-observer"
 version = "0.0.1"
-source = { git = "https://github.com/kentbull/kf-observer.git?rev=ae7af7bb8683dba3e1357df6969568589ecf2d3c#ae7af7bb8683dba3e1357df6969568589ecf2d3c" }
+source = { git = "https://github.com/kentbull/kf-observer.git?rev=dcd4fbe8d1460614b7556358caf56c2737ea71d4#dcd4fbe8d1460614b7556358caf56c2737ea71d4" }
 dependencies = [
     { name = "falcon" },
     { name = "hio" },
@@ -339,7 +339,7 @@ dependencies = [
 [[package]]
 name = "kf-registrar"
 version = "0.0.1"
-source = { git = "https://github.com/kentbull/kf-registrar.git?rev=9de1cfa3b5ad858603f0e5290c9def798ecd2b8d#9de1cfa3b5ad858603f0e5290c9def798ecd2b8d" }
+source = { git = "https://github.com/kentbull/kf-registrar.git?rev=99d38ca7aa2c4ac2e601de7c5ca03bdf2a22d427#99d38ca7aa2c4ac2e601de7c5ca03bdf2a22d427" }
 dependencies = [
     { name = "falcon" },
     { name = "hio" },
