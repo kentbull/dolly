@@ -13,14 +13,16 @@ from keri import Vrsn_1_0, Vrsn_2_0, Kinds
 from keri.acdc import acdcmap, blindate, regcept, grant
 from dolly.serving import signedQuery
 from keri.app.habbing import openHby
+from keri.app import forwarding
 from dolly.serving import Context as Dolly, DollyExchanger, TcpIntake, _RequestPolicy
 from keri.app.httping import CESR_CONTENT_TYPE, CESR_ATTACHMENT_HEADER
 from keri.core import (Blinder, Noncer, Compactor, messagize, Counter, Codens, Number, Diger,
-                       SealSource, SealEvent, SerderKERI, Parser, Kevery)
+                       BlindState, BoundState, SealSource, SealEvent, SerderKERI, Parser, Kevery)
 from keri.peer import exchanging
 from keri.vdr import eventing as legacy, verifying
 from keri.vc import proving, protocoling
 from keri.acdc import Regery, Registrar as AcdcV2Registrar, apply, offer, agree, admit
+from keri.acdc.unblinding import Unblind
 from keri.help import helping
 from kfobserver.core.evidence import Context as Observer
 from kfobserver.core.evidence_observing import RegistrarPuller, SourceTrust
@@ -96,7 +98,8 @@ def test_empty_grant_is_non_reportable_and_later_grants_report_after_reopen(tmp_
             proof = messagize(credential, tsgs=[(ihab.kever.prefixer,
                 Number(sn=ihab.kever.lastEst.s), Diger(qb64=ihab.kever.lastEst.d),
                 ihab.sign(credential.raw))], framed=False, gvrsn=Vrsn_2_0)
-            grants = []
+            grants, oldRows = [], []
+            historical = None
             for phase in range(2):
                 with openHby(name='empty-grant-dolly', temp=False,
                              headDirPath=str(tmp_path), version=Vrsn_2_0) as verifier:
@@ -125,10 +128,54 @@ def test_empty_grant_is_non_reportable_and_later_grants_report_after_reopen(tmp_
                         assert result == [dict(grant=normal.said, state='accepted')]
                         doing.Doist(real=True, tock=0.01, limit=0.4).do(
                             doers=[http.ServerDoer(server=server), dolly])
-                        assert [item['grant'] for item in received] == [
-                            item.said for item in [*grants, normal]]
+                        expected = {item.said for item in [*grants, normal]}
+                        if phase:
+                            expected.add(oldRows[1][0].said)
+                        assert {item['grant'] for item in received} == expected
+                        assert len(received) == len(expected)
                         assert dolly.db.submissions.get((normal.said,)).delivered
                         grants.append(normal)
+                        if phase == 0:
+                            # Write the application's earlier JSON format, with
+                            # actual core-accepted Grants and no synthetic proofs.
+                            def oldRow(message, payload, delivered=False):
+                                value = dict(grant=message.said, registries=[], state='accepted',
+                                    reason='', payload=payload, delivered=delivered)
+                                raw = json.dumps(value).encode()
+                                dolly.db.setVal(db=dolly.db.submissions.sdb,
+                                    key=message.said.encode(), val=raw)
+                                return raw
+
+                            previous = dict(dolly.db.submissions.get((normal.said,)).payload)
+                            previous.pop('admit')
+                            historical = oldRow(normal, previous, delivered=True)
+                            for recover in (False, True):
+                                old, attachment = grant(ihab, dhab.pre,
+                                    f'old accepted row {recover}', origin=proof)
+                                dolly._parser(Vrsn_2_0).parse(
+                                    ims=bytearray(old.raw + attachment), framed=False)
+                                assert dolly.exc.complete(old.said)
+                                response = None
+                                if recover:
+                                    response, attachment = admit(dhab, 'accepted before restart', old)
+                                    dolly._parser(Vrsn_2_0).parse(
+                                        ims=bytearray(response.raw + attachment), framed=False)
+                                    assert dolly.exc.complete(response.said)
+                                payload = dict(previous, grant=old.said,
+                                    acceptedAt=helping.nowIso8601())
+                                oldRow(old, payload)
+                                oldRows.append((old, payload, response.said if response else None))
+                        else:
+                            refused = dolly.db.submissions.get((oldRows[0][0].said,))
+                            assert refused.state == 'non-reportable' and not refused.delivered
+                            assert 'fresh Grant required' in refused.reason
+                            assert verifier.db.erpy.get((refused.grant,)) is None
+                            assert refused.payload == oldRows[0][1]
+                            recovered = dolly.db.submissions.get((oldRows[1][0].said,))
+                            assert recovered.delivered and recovered.admit == oldRows[1][2]
+                            assert recovered.payload == dict(oldRows[1][1], admit=oldRows[1][2])
+                            assert dolly.db.getVal(db=dolly.db.submissions.sdb,
+                                key=grants[0].said.encode()) == historical
                     finally:
                         dolly.close()
     finally:
@@ -1001,7 +1048,13 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
         holderKvy = Kevery(db=holder.db, cf=_RequestPolicy(), enableKram=True,
                            lax=False, local=False)
         holderExc = DollyExchanger(holder, hrgy)
-        holderParser = Parser(kvy=holderKvy, rgy=hrgy, exc=holderExc, version=Vrsn_2_0)
+        holderUnblind = Unblind(hhab, holderExc, hrgy, states=('issued', 'revoked', ''))
+        holderKvy.qvy = holderUnblind
+        holderKvy.rvy = hhab.rvy
+        hhab.rvy.rtr.addRoute(Unblind.Route, holderUnblind, blinders=True, attachments=True)
+        holderParser = Parser(kvy=holderKvy, rgy=hrgy, exc=holderExc,
+                              rvy=hhab.rvy, version=Vrsn_2_0)
+        holderQueries = []
 
         def holderIngest(raw):
             """Run the holder's actual native processors without a retired wallet facade."""
@@ -1013,8 +1066,39 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
         class HolderIntake:
             """Expose the same real protocol intake to the independent holder over HTTP."""
             def on_post(self, req, rep):
-                holderIngest(req.bounded_stream.read())
+                raw = req.bounded_stream.read()
+                for parsed in Parser(version=Vrsn_2_0).parse(
+                        ims=bytearray(raw), framed=False, processive=False):
+                    if parsed.serder.ilk == 'qry':
+                        holderQueries.append(parsed.serder)
+                holderIngest(raw)
                 rep.status = falcon.HTTP_202
+
+            on_put = on_post
+
+        def holderReplies(tymth, tock=0.01, **kwa):
+            """Send native reply cues through ordinary authenticated endpoint transport."""
+            yield tock
+            while True:
+                while holderUnblind.cues:
+                    cue = holderUnblind.cues.popleft()
+                    parsed = Parser(version=Vrsn_2_0).parseOne(
+                        ims=bytearray(cue['msg']), processive=False)
+                    wire = messagize(parsed.serder, sigers=parsed.sigers, tsgs=parsed.tsgs,
+                        lsgs=parsed.lsgs, cigars=parsed.cigars,
+                        bonds=[BlindState(*value) for value in parsed.bsqs]
+                            + [BoundState(*value) for value in parsed.bsss], gvrsn=Vrsn_2_0)
+                    poster = forwarding.StreamPoster(hby=holder, hab=hhab,
+                        recp=cue['dest'], topic='credential', version=Vrsn_2_0)
+                    poster.send(parsed.serder, attachment=wire[parsed.serder.size:])
+                    delivery = doing.DoDoer(doers=poster.deliver(), tymth=tymth)
+                    delivery.enter()
+                    try:
+                        while not delivery.recur(tyme=tymth()):
+                            yield tock
+                    finally:
+                        delivery.exit()
+                yield tock
         public = bytes(authority.replay(gvrsn=Vrsn_2_0) + ihab.replay(gvrsn=Vrsn_2_0)
                        + hhab.replay(gvrsn=Vrsn_2_0) + frame_v2_events(*rips, farIss, nearIss))
         received = []
@@ -1023,11 +1107,18 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
             """Receive actual application HTTP hooks for exact payload assertions."""
             def on_post(self, req, rep):
                 """Record the projected JSON body and acknowledge actual webhook delivery."""
-                received.append(req.media)
+                payload = req.media
+                admitted = verifier.db.exns.get((payload['admit'],))
+                assert admitted is not None and dolly.exc.complete(admitted.said)
+                assert admitted.sad['p'] == payload['grant']
+                assert verifier.db.erpy.get((payload['grant'],)).qb64 == admitted.said
+                assert holderExc.complete(admitted.said)
+                received.append(payload)
                 rep.media = {'received': True}
 
         holderApp, hookApp = falcon.App(), falcon.App()
         holderApp.add_route('/ingest', HolderIntake())
+        holderApp.add_route('/', HolderIntake())
         hookApp.add_route('/hook', Hook())
         servers = [
             http.Server(servant=tcp.ServerTls(host='127.0.0.1', port=0,
@@ -1064,7 +1155,8 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
             servers.append(ingress)
             dollyURL = f'http://127.0.0.1:{ingress.servant.ha[1]}/ingest'
             puller = RegistrarPuller(ohab, obs, [source], interval=0.1, timeout=1)
-            doers = [http.ServerDoer(server=server) for server in servers] + [puller, dolly]
+            doers = [http.ServerDoer(server=server) for server in servers] + [
+                puller, dolly, doing.doify(holderReplies)]
 
             def send(url, raw, duration=0.25):
                 """Transmit one CESR body to the actual HTTP listener and require intake acknowledgement."""
@@ -1078,11 +1170,22 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
                 doing.Doist(real=True, tock=0.01, limit=duration).do(doers=[*doers, owner])
                 assert client.responses and client.responses.popleft()['status'] == 202
 
+            # Publish the newer issuer head before the existing negotiation
+            # network turns, so the configured observer actually knows the tail
+            # when this presentation later needs its missing opening.
+            tailOpening, tail = irar.vacate(nearReg)
+            anchor(ihab, nearReg, tail)
+            tailPublic = ihab.replay(gvrsn=Vrsn_2_0) + frame_v2_events(tail)
+            assert not reg.ingest(tailPublic)['rejected']
+
             plan = [[full.schema['$id'], '/', []],
                     [far.schema['$id'], '/e/authority/_/', []]]
             application, aatc = apply(dhab, hhab.pre, 'request entitlement chain', modifiers={'dp': [plan]})
             dolly.ingest(application.raw + aatc)
-            send(urls[2] + 'ingest', dhab.replay(gvrsn=Vrsn_2_0) + application.raw + aatc)
+            send(urls[2] + 'ingest', dhab.replay(gvrsn=Vrsn_2_0)
+                + dhab.makeEndRole(eid=dhab.pre, version=Vrsn_2_0, gvrsn=Vrsn_2_0)
+                + dhab.makeLocScheme(url=dollyURL, version=Vrsn_2_0, gvrsn=Vrsn_2_0)
+                + application.raw + aatc)
             assert holderExc.complete(application.said)
             offered, oatc = offer(hhab, 'disclose selected entitlement', origin=partial,
                                   artifacts=[far], apply=application)
@@ -1110,10 +1213,24 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
             assert final.raw == draft.raw and final.said == draft.said
             holderIngest(final.raw + fatc)
             assert holderExc.complete(final.said)
+            # A newer public head makes the accepted old issuance proof stale.
+            # Holder receives the one exact opening separately; Dolly receives
+            # only authenticated public evidence through its configured observer.
+            holderIngest(tailPublic)
+            hrgy.store.putOpening(tail.said, tailOpening)
+            holderUnblind.approve(final.said)
+            assert obs.rgy.store.head(nearReg.regk).qb64 == tail.said
+            endpoint = hhab.makeEndRole(eid=hhab.pre, version=Vrsn_2_0, gvrsn=Vrsn_2_0)
+            endpoint += hhab.makeLocScheme(url=urls[2], version=Vrsn_2_0, gvrsn=Vrsn_2_0)
             presentationFrame = presented.raw + Counter.enclose(
                 qb64=Blinder.enclose([presentationOpening]),
                 code=Codens.AttachmentGroup, version=Vrsn_2_0)
             assert not reg.ingest(hhab.replay(gvrsn=Vrsn_2_0) + presentationFrame)['rejected']
+            # Intake alone cannot report the stale proof or ask for openings.
+            dolly.ingest(hhab.replay(gvrsn=Vrsn_2_0) + endpoint + final.raw + fatc)
+            assert received == [] and not holderQueries and not dolly._unblinds
+            assert dolly.db.submissions.get((final.said,)).state == 'pending'
+            exact = [nest.serder.raw for nest in exchanging.loadParsedNestedSubstreams(verifier, final.said)]
             send(dollyURL, hhab.replay(gvrsn=Vrsn_2_0) + final.raw + fatc, duration=2.5)
             assert dolly.exc.complete(final.said)
             assert len(received) == 1, dolly.db.submissions.get((final.said,))
@@ -1124,11 +1241,16 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
             assert all(dolly.synchronized(regid) for regid in (farReg.regk, nearReg.regk, presentationReg.regk))
             assert verifier.kevers[ihab.pre].lastEst.d == ihab.kever.lastEst.d
             assert verifier.kevers[hhab.pre].lastEst.d == hhab.kever.lastEst.d
-            admitted, iatc = admit(dhab, 'admit the verified entitlement chain', final)
-            dolly.ingest(admitted.raw + iatc)
-            assert dolly.exc.complete(admitted.said)
-            send(urls[2] + 'ingest', admitted.raw + iatc)
-            assert holderExc.complete(admitted.said)
+            assert len(holderQueries) == 1
+            assert holderQueries[0].sad['q']['re'] == {nearReg.regk: [tail.said]}
+            assert [nest.serder.raw for nest in exchanging.loadParsedNestedSubstreams(verifier, final.said)] == exact
+            record = dolly.db.submissions.get((final.said,))
+            assert record.admit == received[0]['admit'] and record.admitSubmitted and record.delivered
+            assert holderExc.complete(record.admit)
+            # Replayed old Grant bytes cannot expand its view or renew approval.
+            send(dollyURL, final.raw + fatc)
+            assert len(received) == len(holderQueries) == 1
+            assert dolly.db.submissions.get((final.said,)).payload == received[0]
         finally:
             for client in clients:
                 client.close()

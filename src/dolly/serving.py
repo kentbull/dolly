@@ -16,12 +16,14 @@ from hio.core import http, tcp
 
 from keri import Vrsn_1_0, Vrsn_2_0, Kinds
 from keri.acdc import Regery, ipexing, chaining
-from keri.app import agenting
+from keri.acdc.unblinding import Unblind
+from keri.app import agenting, forwarding
 from keri.app.indirecting import createHttpServer
 from dolly.projecting import project
 from keri.app.httping import CESR_CONTENT_TYPE, CESR_ATTACHMENT_HEADER
-from keri.core import (Parser, SerderACDC, SerderKERI, Serdery, GenDex, Revery,
-                       Diger, Kevery, Number, NumDex, Schemer, query as makeQuery)
+from keri.core import (Parser, SerderACDC, SerderKERI, Serdery, GenDex,
+                       BlindState, BoundState, Diger, Kevery, Number, NumDex, Schemer, SealSource,
+                       messagize, query as makeQuery)
 from keri.core.kraming import Pruner
 from keri.db import dbing, koming
 from keri.db.basing import BaserDoer
@@ -87,13 +89,17 @@ class Submission:
     """Persist one grant reporting decision and its exact projected payload.
 
     Pending records retry dependencies; terminal decisions survive reopen.
-    delivered records webhook acknowledgement, not protocol acceptance."""
+    admit identifies the locally accepted native response. admitSubmitted is
+    transport acknowledgement; delivered is webhook acknowledgement. Neither
+    establishes the presenter's protocol acceptance."""
     grant: str
     registries: list = field(default_factory=list)
     state: str = 'pending'
     reason: str = ''
     payload: dict = field(default_factory=dict)
     delivered: bool = False
+    admit: str = ''
+    admitSubmitted: bool = False
 
 
 @dataclass
@@ -258,6 +264,8 @@ class Context(doing.DoDoer):
         self.maximumAge, self.timeout = maximumAge, timeout
         self._deliveryFailures, self._deliveryRetry = {}, {}
         self._registryCursor = self._deliveryCursor = None
+        self._unblinds = {}
+        self._liveGrants = set()
         self.legacySources = tuple(legacySources)
         self.db = db if db is not None else DollyBaser(name=hby.name, base=hby.base, temp=hby.temp)
         self.kvy = Kevery(db=hby.db, cf=_RequestPolicy(), enableKram=True,
@@ -266,7 +274,9 @@ class Context(doing.DoDoer):
         self.pruner = Pruner(self.kvy.kramer, tock=1.0)
         self.legacy = legacy if legacy is not None else verifying.Verifier(hby,
             reger=legacyEventing.Reger(name=hby.name, base=hby.base, temp=hby.temp))
-        self.rvy = Revery(db=hby.db)
+        # Native Unblind authenticates through hab.rvy: use that same owner for
+        # intake, endpoint evidence, reply escrows and auxiliary attachments.
+        self.rvy = hab.rvy
         self.kvy.rvy = self.rvy
         self.kvy.registerReplyRoutes(self.rvy.rtr)
         self.legacy.tvy.rvy = self.rvy
@@ -274,6 +284,9 @@ class Context(doing.DoDoer):
         self.inquisitor = agenting.WitnessInquisitor(hby=hby)
         self.exc = DollyExchanger(hby, self.rgy)
         self.acdcV2Ipex = self.exc.routes['/ipex/grant']
+        self.unblind = Unblind(hab, self.exc, self.rgy, states=('issued', 'revoked', ''))
+        self.kvy.qvy = self.unblind
+        self.rvy.rtr.addRoute(Unblind.Route, self.unblind, blinders=True, attachments=True)
         self._promoteSchemas()
         self.app = falcon.App()
         self.app.add_route('/ingest', IntakeEnd(self))
@@ -346,8 +359,8 @@ class Context(doing.DoDoer):
         self._promoteSchemas()
         # Missing bootstrap raises before KRAM retains this request. Do not
         # manufacture a pending row that would survive a refused HTTP request.
-        if submission is not None:
-            self.db.submissions.put((submitted,), submission)
+        if submission is not None and self.db.submissions.put((submitted,), submission):
+            self._liveGrants.add(submitted)
         return submitted
 
     def _promoteSchemas(self):
@@ -590,13 +603,126 @@ class Context(doing.DoDoer):
                 query.reply = reply.said
                 self.db.legacyQueries.pin(keys, query)
 
-    def process(self):
-        """Retry core dependencies and persist each pending reporting decision.
+    def _policy(self, exn, credential):
+        """Apply the same exact-view application policy before approval and Admit."""
+        if exn.sad.get('ri') != self.hab.pre:
+            raise ValidationError('grant is addressed to a different disclosee')
+        schema = credential.sad.get('s')
+        schema = schema.get('$id') if isinstance(schema, dict) else schema
+        if credential.israid not in self.issuers or schema not in self.schemas:
+            raise ValidationError('issuer or schema is outside application policy')
+        values, disclosure = project(credential, self.fields, self.required)
+        return schema, values, disclosure
 
-        Return None. Missing chain/schema evidence keeps a submission pending;
-        invalid credentials become rejected, valid empty grants non-reportable,
-        and configured credential projections accepted. Terminal decisions are
-        skipped on later turns and reopen. HTTP delivery belongs to workDo.
+    def _registryHints(self, nests):
+        """Read acquisition hints from already authenticated exact retained nests."""
+        registries = set()
+        for nest in nests:
+            if regid := nest.serder.sad.get('rd'):
+                registries.add(regid)
+            registries.update(regid for _, regid in
+                self.acdcV2Ipex._presentationRegistries(nest.serder) or [])
+            registries.update(pre.qb64 for pre, _, _ in nest.ssts
+                if pre.qb64 != nest.serder.israid and pre.qb64 not in self.hby.kevers)
+        return registries
+
+    def _openings(self, record, exn):
+        """Approve once, only after observer evidence and exact application policy.
+
+        Core owns the original deadline, transaction status and frozen public
+        heads. A reopened process cannot renew an interrupted approval.
+        """
+        operation = self._unblinds.get(record.grant)
+        if operation is not None:
+            if self.unblind.complete(operation['x']):
+                operation['finished'] = bool(self.unblind.finish(operation['x']))
+            else:
+                self.unblind.start(record.grant)  # Recheck frozen heads/lifetime only.
+            return
+        nests = exchanging.loadParsedNestedSubstreams(self.hby, exn.said)
+        hints = self._registryHints(nests)
+        if not hints or not all(self.synchronized(regid) for regid in hints):
+            return
+        origin, _ = self._acdcV2GrantDisclosure(exn, nests)
+        if origin is None:
+            return
+        self._policy(exn, origin)
+        if record.grant not in self._liveGrants:
+            raise MissingChainError('interrupted presentation requires a fresh Grant')
+        xid = exn.said if exn.ilk == 'xip' else exn.sad.get('x')
+        context = self.exc.presentationContext(exn.said, xid=xid,
+            sender=exn.pre, recipient=self.hab.pre)
+        if context is None:
+            deadline = self.hby.db.epsd.get((exn.said,))
+            if (deadline is not None and helping.nowUTC() >= deadline.datetime
+                    or self.hby.db.erpy.get((exn.said,)) is not None):
+                raise ValidationError('presentation is unavailable, terminated or expired')
+            return  # Ordinary schema/chain dependencies have not authorized approval.
+        # start() refuses an already sufficient Grant; callers reach here only
+        # when ordinary verification still needs current issuer openings.
+        self.unblind.approve(exn.said)
+        operation = dict(x=xid, query=None, sent=False, finished=False)
+        self._unblinds[record.grant] = operation
+        operation['query'] = self.unblind.start(exn.said)
+
+    def _acceptedAdmit(self, exn):
+        """Read and authenticate only this native Grant's exact retained response."""
+        link = self.hby.db.erpy.get((exn.said,))
+        admitted = self.hby.db.exns.get((link.qb64,)) if link else None
+        xid = exn.said if exn.ilk == 'xip' else exn.sad.get('x')
+        if (exn.pvrsn != Vrsn_2_0 or exn.route != '/ipex/grant'
+                or exn.sad.get('ri') != self.hab.pre
+                or admitted is None or admitted.said != link.qb64 or admitted.pvrsn != Vrsn_2_0
+                or admitted.route != '/ipex/admit' or admitted.sad.get('p') != exn.said
+                or admitted.pre != self.hab.pre or admitted.sad.get('ri') != exn.pre
+                or admitted.sad.get('x') != xid):
+            return None
+        exchanging.verify(self.hby, admitted)
+        return admitted
+
+    def _admit(self, record, exn):
+        """Accept one local Admit and retain its exact SAID before reporting."""
+        if self.hby.db.erpy.get((exn.said,)) is None:
+            admitted, attachment = ipexing.admit(self.hab, 'admit verified presentation', exn)
+            self._parser(Vrsn_2_0).parse(ims=bytearray(admitted.raw + attachment), framed=False)
+        admitted = self._acceptedAdmit(exn)
+        if admitted is None:
+            raise ValidationError('presentation lacks its exact accepted local Admit')
+        record.admit = admitted.said
+        return admitted.said
+
+    def _deliveryAdmission(self, keys, record):
+        """Gate old undelivered native decisions using existing protocol evidence.
+
+        This never creates a response, renews approval or reprojects a credential.
+        Successfully delivered history is left as recorded.
+        """
+        if record.delivered:
+            return True
+        exn = self.hby.db.exns.get((record.grant,))
+        if exn is not None and exn.route == '/ipex/grant' and exn.pvrsn == Vrsn_1_0:
+            return True
+        try:
+            admitted = self._acceptedAdmit(exn) if exn is not None else None
+        except (ValidationError, MissingSenderKeyStateError):
+            admitted = None
+        if admitted is None:
+            record.state = 'non-reportable'
+            record.reason = 'native presentation lacks an accepted Admit; fresh Grant required'
+            self.db.submissions.pin(keys, record)
+            self._abandon(record.grant)
+            return False
+        if record.admit != admitted.said or record.payload.get('admit') != admitted.said:
+            record.admit = admitted.said
+            record.payload['admit'] = admitted.said
+            self.db.submissions.pin(keys, record)
+        return True
+
+    def process(self):
+        """Verify current standing, locally accept Admit, then persist reporting.
+
+        Native auxiliary readiness never substitutes for ordinary Grant/DAG and
+        application policy verification. Terminal submissions are never renewed.
         """
         self.kvy.processEscrows()
         self.rgy.processEscrows()
@@ -607,35 +733,128 @@ class Context(doing.DoDoer):
         self._promoteSchemas()
         self.exc.processEscrow()
         for keys, record in self.db.submissions.getTopItemIter():
-            if record.state != 'pending' or not self.exc.complete(record.grant):
+            if record.state != 'pending':
                 continue
-            exn = self.hby.db.exns.get((record.grant,))
+            exn = self.hby.db.exns.get((record.grant,)) or self.hby.db.epse.get((record.grant,))
+            if exn is None:
+                if record.grant in self._unblinds:
+                    record.state = 'rejected'
+                    record.reason = 'presentation is unavailable, terminated or expired'
+                    self.db.submissions.pin(keys, record)
+                    self._abandon(record.grant)
+                continue
             try:
-                credential = (self._acdcV2GrantCredential(exn) if exn.pvrsn.major == 2
-                              else self._legacyCredential(exn))
+                if exn.pvrsn.major == 2:
+                    operation = self._unblinds.get(record.grant)
+                    if operation is not None and not operation['finished']:
+                        self._openings(record, exn)
+                    if not self.exc.complete(record.grant):
+                        self._openings(record, exn)
+                        raise MissingChainError('Grant awaits current issuer-registry openings')
+                    try:
+                        credential = self._acdcV2GrantCredential(exn)
+                    except MissingChainError:
+                        self._openings(record, exn)
+                        raise
+                else:
+                    if not self.exc.complete(record.grant):
+                        continue
+                    credential = self._legacyCredential(exn)
                 if credential is None:
-                    # Protocol-valid empty disclosure is terminal reporting work,
-                    # so it cannot poison retries or enter credential delivery.
                     record.state, record.reason = 'non-reportable', 'grant discloses no credential'
                     self.db.submissions.pin(keys, record)
+                    self._abandon(record.grant)
                     continue
-                schema = credential.sad.get('s')
-                schema = schema.get('$id') if isinstance(schema, dict) else schema
-                if credential.israid not in self.issuers or schema not in self.schemas:
-                    raise ValidationError('issuer or schema is outside application policy')
-                values, disclosure = project(credential, self.fields, self.required)
+                if exn.pvrsn.major == 2:
+                    schema, values, disclosure = self._policy(exn, credential)
+                    admit = self._admit(record, exn)
+                else:
+                    schema = credential.sad.get('s')
+                    schema = schema.get('$id') if isinstance(schema, dict) else schema
+                    if credential.israid not in self.issuers or schema not in self.schemas:
+                        raise ValidationError('issuer or schema is outside application policy')
+                    values, disclosure = project(credential, self.fields, self.required)
+                    admit = None
                 record.payload = dict(schema='dolly.accepted-credential/v1',
                     decision='accepted', credential=credential.said, grant=exn.said,
                     issuer=credential.israid, presenter=exn.pre, verifier=self.hab.pre,
                     credentialSchema=schema, protocol=exn.pvrsn.major,
                     business=values, disclosure=disclosure, standing='issued',
                     acceptedAt=helping.nowIso8601())
+                if admit:
+                    record.payload['admit'] = admit
                 record.state, record.reason = 'accepted', ''
             except (MissingChainError, MissingSchemaError) as error:
                 record.reason = str(error)
             except ValidationError as error:
                 record.state, record.reason = 'rejected', str(error)
             self.db.submissions.pin(keys, record)
+            if record.state != 'pending':
+                self._abandon(record.grant)
+
+    def _sendProtocol(self, destination, wire, grant):
+        """Submit exact protocol bytes through ordinary endpoint/mailbox routing.
+
+        Transport completion is separate from reply intake and peer acceptance.
+        Public KEL/TEL support accompanies the message; openings and roots are
+        never inferred from the support stream. Cancellation closes child I/O.
+        """
+        delivery = None
+        try:
+            parsed = Parser(version=Vrsn_2_0).parseOne(ims=bytearray(wire), processive=False)
+            message = parsed.serder
+            if not wire.startswith(message.raw):
+                wire = messagize(message, sigers=parsed.sigers, tsgs=parsed.tsgs,
+                    lsgs=parsed.lsgs, cigars=parsed.cigars,
+                    bonds=[BlindState(*value) for value in parsed.bsqs]
+                        + [BoundState(*value) for value in parsed.bsss],
+                    nests=[exchanging.serializeParsedSubstream(nest) for nest in parsed.nests],
+                    gvrsn=Vrsn_2_0)
+            poster = forwarding.StreamPoster(hby=self.hby, hab=self.hab,
+                recp=destination, topic='credential', version=Vrsn_2_0)
+            nests = exchanging.loadParsedNestedSubstreams(self.hby, grant)
+            for pre in dict.fromkeys([self.hab.pre, *(nest.serder.israid for nest in nests)]):
+                for raw in self.hby.db.cloneDelegation(self.hby.kevers[pre], gvrsn=Vrsn_2_0):
+                    event = SerderKERI(raw=raw)
+                    poster.send(serder=event, attachment=raw[event.size:])
+                for raw in self.hby.db.clonePreIter(pre, gvrsn=Vrsn_2_0):
+                    event = SerderKERI(raw=raw)
+                    poster.send(serder=event, attachment=raw[event.size:])
+            for regid in sorted(self._registryHints(nests)):
+                for raw in self.rgy.store.cloneTelIter(regid):
+                    event = SerderACDC(raw=raw)
+                    # RegistryStore yields bare bodies. Carry their already
+                    # verified public source in a complete attachment group.
+                    number, diger = self.rgy.store.anchor(event.said)
+                    framed = messagize(event, bonds=[SealSource(s=number.snh,
+                        d=diger.qb64)], gvrsn=Vrsn_2_0)
+                    poster.send(serder=event, attachment=framed[event.size:])
+            poster.send(serder=message, attachment=wire[message.size:])
+            doers = poster.deliver()
+            if not doers:
+                return False
+            delivery = doing.DoDoer(doers=doers, tymth=self.tymth)
+            delivery.enter()
+            deadline = self.tyme + self.timeout
+            while not delivery.recur(tyme=self.tyme):
+                if self.tyme >= deadline:
+                    return False
+                yield self.tock
+            return all(not isinstance(messenger, agenting.HTTPStreamMessenger)
+                or messenger.rep is not None and 200 <= messenger.rep.status < 300
+                for messenger in poster.messagers)
+        except (OSError, ValueError, ValidationError):
+            return False
+        finally:
+            if delivery is not None:
+                delivery.exit()
+
+    def _abandon(self, grant):
+        """Drop process-local auxiliary authority when application work terminates."""
+        self._liveGrants.discard(grant)
+        operation = self._unblinds.pop(grant, None)
+        if operation is not None:
+            self.unblind.abandon(operation['x'])
 
     def request(self, url, *, body=None, data=None, trust=None):
         """Send one bounded CESR-evidence or JSON-webhook POST and yield while waiting.
@@ -679,11 +898,12 @@ class Context(doing.DoDoer):
         while True:
             now = self.tyme
             waitingDelivery = any(
-                record.state == 'accepted' and not record.delivered
+                record.state == 'accepted' and (not record.delivered
+                    or record.admit and not record.admitSubmitted)
                 and now >= self._deliveryRetry.get(record.grant, 0)
                 for _, record in self.db.submissions.getTopItemIter())
             registryBudget = (MAX_OUTBOUND_REQUESTS_PER_TURN // 2
-                              if waitingDelivery
+                              if waitingDelivery or self._unblinds
                               else MAX_OUTBOUND_REQUESTS_PER_TURN)
             registries = set()
             for _, record in self.db.submissions.getTopItemIter():
@@ -699,15 +919,8 @@ class Context(doing.DoDoer):
                     exchanging.verify(self.hby, exn)
                 except ValidationError:
                     continue
-                for nest in exchanging.loadParsedNestedSubstreams(self.hby, exn.said):
-                    if (regid := nest.serder.sad.get('rd')):
-                        registries.add(regid)
-                    registries.update(regid for _, regid in
-                        self.acdcV2Ipex._presentationRegistries(nest.serder) or [])
-                    # Nonissuer source triples are untrusted fetch hints until
-                    # the core validates their exact accepted TEL event.
-                    registries.update(pre.qb64 for pre, _, _ in nest.ssts
-                        if pre.qb64 != nest.serder.israid and pre.qb64 not in self.hby.kevers)
+                registries.update(self._registryHints(
+                    exchanging.loadParsedNestedSubstreams(self.hby, exn.said)))
             selected, self._registryCursor = rotated(
                 registries, self._registryCursor,
                 registryBudget)
@@ -724,16 +937,49 @@ class Context(doing.DoDoer):
                 if outbound >= MAX_OUTBOUND_REQUESTS_PER_TURN:
                     break
             self.process()
+            for grant, operation in tuple(self._unblinds.items()):
+                record = self.db.submissions.get((grant,))
+                if (outbound >= MAX_OUTBOUND_REQUESTS_PER_TURN or operation['sent']
+                        or record.state != 'pending'):
+                    continue
+                exn = self.hby.db.exns.get((grant,)) or self.hby.db.epse.get((grant,))
+                if not self.hab.endsFor(exn.pre):
+                    continue
+                try:
+                    self.unblind.start(grant)  # Never renew the frozen request.
+                    operation['sent'] = yield from self._sendProtocol(
+                        exn.pre, operation['query'], grant)
+                except ValidationError as error:
+                    record.state, record.reason = 'rejected', str(error)
+                    self.db.submissions.pin((grant,), record)
+                    self._abandon(grant)
+                outbound += 1
+            self.process()
             now = self.tyme
             deliveries = [(keys, record)
                           for keys, record in self.db.submissions.getTopItemIter()
-                          if (record.state == 'accepted' and not record.delivered
+                          if (record.state == 'accepted' and (not record.delivered
+                              or record.admit and not record.admitSubmitted)
                               and now >= self._deliveryRetry.get(record.grant, 0))]
             selected, self._deliveryCursor = rotated(
                 deliveries, self._deliveryCursor,
                 MAX_OUTBOUND_REQUESTS_PER_TURN - outbound,
                 key=lambda item: item[1].grant)
             for keys, record in selected:
+                if outbound >= MAX_OUTBOUND_REQUESTS_PER_TURN:
+                    break
+                if not self._deliveryAdmission(keys, record):
+                    continue
+                if record.admit and not record.admitSubmitted:
+                    exn = self.hby.db.exns.get((record.grant,))
+                    record.admitSubmitted = yield from self._sendProtocol(exn.pre,
+                        bytes(exchanging.serializeMessage(self.hby, record.admit)), record.grant)
+                    self.db.submissions.pin(keys, record)
+                    outbound += 1
+                    if outbound >= MAX_OUTBOUND_REQUESTS_PER_TURN:
+                        continue
+                if record.delivered:
+                    continue
                 try:
                     response = yield from self.request(
                         self.webhook, data=record.payload)
@@ -755,6 +1001,13 @@ class Context(doing.DoDoer):
             # Ordinary application retry; no distributed exactly-once promise.
             started = self.tyme
             while self.tyme < started + 1.0:
+                # A native reply can accept its Admit through intake while this
+                # worker is idle. Deliver new reporting work on the next turn.
+                if self.tyme > started and any(
+                        record.state == 'accepted' and not record.delivered
+                        and self.tyme >= self._deliveryRetry.get(record.grant, 0)
+                        for _, record in self.db.submissions.getTopItemIter()):
+                    break
                 yield tock
 
     def close(self):
@@ -763,6 +1016,11 @@ class Context(doing.DoDoer):
         Reopening requires a fresh context over the same configured stores.
         Habery ownership remains with the caller.
         """
+        for grant in tuple(self._unblinds):
+            self._abandon(grant)
+        self._liveGrants.clear()
+        self.rvy.rtr.routes[:] = [route for route in self.rvy.rtr.routes
+                                 if route.resource is not self.unblind]
         for client in tuple(self.clients):
             client.close()
         self.db.close()

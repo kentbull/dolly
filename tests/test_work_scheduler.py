@@ -22,7 +22,8 @@ class Store:
 def workContext(records):
     """Build a scheduler-only Context over deterministic durable rows."""
     exns = Store(((record.grant,), SimpleNamespace(
-        said=record.grant, pvrsn=SimpleNamespace(major=2)))
+        said=record.grant, route='/ipex/grant',
+        pvrsn=serving.Vrsn_1_0 if record.state == 'accepted' else serving.Vrsn_2_0))
         for _, record in records)
     context = object.__new__(serving.Context)
     context.db = SimpleNamespace(
@@ -41,6 +42,7 @@ def workContext(records):
     context.observe = MethodType(lambda self, regid, response: None, context)
     context._deliveryFailures, context._deliveryRetry = {}, {}
     context._registryCursor = context._deliveryCursor = None
+    context._unblinds = {}
     return context
 
 
@@ -82,7 +84,8 @@ def test_work_loop_rotates_past_eight_unresponsive_registries(monkeypatch):
 def test_webhook_request_failure_is_backed_off(monkeypatch):
     """A substituted request-generator OSError retains its row and enters retry."""
     record = SimpleNamespace(
-        grant="grant-00", state="accepted", delivered=False, payload={"ok": True})
+        grant="grant-00", state="accepted", delivered=False, payload={"ok": True},
+        admit="", admitSubmitted=False)
     context = workContext([((record.grant,), record)])
     calls = []
 
