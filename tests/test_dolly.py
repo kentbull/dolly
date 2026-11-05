@@ -1110,3 +1110,25 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
             obs.close()
             irgy.close()
             hrgy.close()
+
+
+def test_observer_request_uses_only_configured_ca():
+    from cryptography import x509
+    from cryptography.hazmat.primitives.serialization import Encoding
+    with openHby(name='dolly-exclusive-ca', version=Vrsn_2_0) as verifier:
+        hab = verifier.makeHab(name='dolly')
+        dolly = Dolly(verifier, hab, issuers=[], schemas=[], fields={},
+            observer=observerTrust('https://127.0.0.1:1/', certedhost='localhost'), webhook='http://hook.test/')
+        clock = doing.Doist(tock=.03125)
+        clock.enter(doers=[dolly])
+        request = dolly.request(dolly.observer, body=b'query', trust=dolly.observerTrust)
+        try:
+            next(request)
+            client, = dolly.clients
+            context = client.connector.context
+            assert context.get_ca_certs(binary_form=True) == [x509.load_pem_x509_certificate(SERVER_TLS.read_bytes()).public_bytes(Encoding.DER)]
+            assert context.check_hostname and context.verify_mode == ssl.CERT_REQUIRED
+        finally:
+            request.close()
+            clock.exit()
+            dolly.close()
