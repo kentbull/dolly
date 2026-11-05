@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 import json
 import ipaddress
 import math
+import ssl
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -719,7 +720,9 @@ class Context(doing.DoDoer):
         removed and closed even on cancellation; response status determines the
         caller's observation or delivery decision."""
         target = urlsplit(url)
-        tls = ({'cafilepath': trust.cafilepath, 'certedhost': trust.certedhost}
+        # HIO also needs cafilepath to avoid reloading system roots.
+        tls = ({'context': ssl.create_default_context(cafile=trust.cafilepath),
+                'cafilepath': trust.cafilepath, 'certedhost': trust.certedhost}
                if trust is not None else {})
         client = http.clienting.Client(scheme=target.scheme, hostname=target.hostname,
             port=target.port or (443 if target.scheme == 'https' else 80),
