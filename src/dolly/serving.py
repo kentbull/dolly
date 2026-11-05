@@ -516,8 +516,8 @@ class Context(doing.DoDoer):
         context = self.exc.presentationContext(exn.said, xid=xid,
             sender=exn.pre, recipient=self.hab.pre)
         if context is None:
-            deadline = self.hby.db.epsd.get((exn.said,))
-            if (deadline is not None and helping.nowUTC() >= deadline.datetime
+            deadline = self.exc.exchangeDeadline(exn)
+            if (deadline is not None and helping.nowUTC() >= deadline
                     or self.hby.db.erpy.get((exn.said,)) is not None):
                 raise ValidationError('presentation is unavailable, terminated or expired')
             return  # Ordinary schema/chain dependencies have not authorized approval.
