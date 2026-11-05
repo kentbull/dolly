@@ -1,7 +1,7 @@
-"""Sally-like application policy over ACDC v2 and v1 KERIpy verification.
+"""Sally-like application policy over v2 ACDC and upstream verification.
 
 Composition informed by Sally ed789de (Apache-2.0); cryptographic verification
-remains in Exchanger, native Regery/IPEX, and legacy Tevery/Verifier.
+remains in Exchanger and v2 Regery/IPEX; Verifier retains sections.
 """
 from dataclasses import asdict, dataclass, field
 import json
@@ -14,7 +14,7 @@ import falcon
 from hio.base import doing
 from hio.core import http, tcp
 
-from keri import Vrsn_1_0, Vrsn_2_0, Kinds
+from keri import Vrsn_2_0, Kinds
 from keri.acdc import Regery, ipexing, chaining
 from keri.acdc.unblinding import Unblind
 from keri.app import agenting, forwarding
@@ -30,14 +30,13 @@ from keri.db.basing import BaserDoer
 from keri.db.dbing import snKey
 from keri.help import helping
 from keri.kering import (ValidationError, ExtractionError, ShortageError, MissingChainError, MissingSchemaError,
-                         MissingRegistryError, MissingAnchorError, MissingSenderKeyStateError,
+                         MissingAnchorError, MissingSenderKeyStateError,
                          MissingSignatureError, MissingWitnessSignatureError,
                          MissingDelegationError, OutOfOrderError, MissingDelegableApprovalError,
                          UnverifiedReceiptError, UnverifiedWitnessReceiptError,
                          UnverifiedTransferableReceiptError)
 from keri.peer import exchanging
-from keri.vdr import verifying, eventing as legacyEventing
-from keri.vc import protocoling
+from keri.vdr import verifying, eventing
 
 
 MAX_OUTBOUND_REQUESTS_PER_TURN = 8
@@ -62,26 +61,6 @@ def signedQuery(hab, route, attributes=None):
     serder = makeQuery(pre=hab.pre, route=route, query=attributes or {},
                    stamp=helping.nowIso8601(), version=Vrsn_2_0)
     return bytes(hab.endorse(serder, last=True, framed=False, gvrsn=Vrsn_2_0))
-
-
-class DollyExchanger(exchanging.Exchanger):
-    """Select genuine v1 and native v2 IPEX handlers with one escrow owner."""
-    def __init__(self, hby, rgy):
-        super().__init__(hby, handlers=[])
-        notices = Notices()
-        ipexing.loadHandlers(hby, self, notices, rgy=rgy)
-        self.legacyRoutes = {route: protocoling.IpexHandler(route, hby, notices)
-                             for route in self.routes}
-
-    def handlerFor(self, serder):
-        """Choose the message's exact protocol lane before evidence hooks run."""
-        route = serder.route
-        if route in self.legacyRoutes:
-            if serder.pvrsn == Vrsn_1_0:
-                return self.legacyRoutes[route]
-            if serder.pvrsn != Vrsn_2_0:
-                raise ValidationError('unsupported IPEX protocol version')
-        return super().handlerFor(serder)
 
 
 @dataclass
@@ -164,21 +143,8 @@ class SourceTrust:
         return cls(url=url, cafilepath=cafilepath, certedhost=certedhost)
 
 
-@dataclass
-class LegacyQuery:
-    """Track one conventional TEL/TSN acquisition attempt for a legacy credential.
-
-    started gates fresh replies from configured sources; reply avoids consuming
-    the same source report twice. This is application observation policy."""
-    credential: str
-    registry: str
-    issuer: str
-    started: str
-    reply: str = ''
-
-
 class DollyBaser(dbing.LMDBer):
-    """Own durable submissions, observer reports, and legacy query bookkeeping.
+    """Own durable submissions and observer reports.
 
     Core KEL/TEL/EXN evidence stays in its existing KERIpy stores."""
     TailDirPath = 'keri/dolly'
@@ -192,7 +158,6 @@ class DollyBaser(dbing.LMDBer):
         super().reopen(**kwa)
         self.submissions = koming.Komer(db=self, subkey='submissions.', klas=Submission)
         self.observed = koming.Komer(db=self, subkey='observed.', klas=Observation)
-        self.legacyQueries = koming.Komer(db=self, subkey='legacy-queries.', klas=LegacyQuery)
         return self.opened
 
 
@@ -245,44 +210,40 @@ class Context(doing.DoDoer):
     One native registry owner and enabled KRAM owner serve both direct transports.
     Historical inspection is separate from current reporting policy."""
     def __init__(self, hby, hab, *, issuers, schemas, fields, required=(),
-                 observer, webhook, maximumAge=15.0, timeout=5.0,
-                 db=None, baser=None, legacy=None, legacySources=()):
-        """Own ordinary KEL/native TEL/IPEX and legacy processors once.
+                 observer, webhook, timeout=5.0,
+                 db=None, baser=None, vry=None):
+        """Own v2 KERI/TEL/IPEX and independent section processors once.
 
-        ``baser`` is the native RegBaser; legacy.reger retains independent sections.
+        ``baser`` is the v2 RegBaser; vry.reger retains independent sections.
         Exact Grant views stay in Baser.enst. One enabled KRAM pruner shares the
-        application's processor lifecycle. maximumAge applies only to v1 TSN
-        observations; timeout bounds outbound observer/webhook requests.
+        application's processor lifecycle; timeout bounds outbound requests.
         """
-        if any(not math.isfinite(value) or value <= 0 for value in (maximumAge, timeout)):
-            raise ValueError('Dolly freshness and request timeouts must be finite and positive')
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError('Dolly request timeout must be finite and positive')
         self.observerTrust = SourceTrust.fromConfig(observer)
         self.hby, self.hab = hby, hab
         self.issuers, self.schemas = set(issuers), set(schemas)
         self.fields, self.required = dict(fields), tuple(required)
         self.observer, self.webhook = self.observerTrust.url, webhook
-        self.maximumAge, self.timeout = maximumAge, timeout
+        self.timeout = timeout
         self._deliveryFailures, self._deliveryRetry = {}, {}
         self._registryCursor = self._deliveryCursor = None
         self._unblinds = {}
         self._liveGrants = set()
-        self.legacySources = tuple(legacySources)
         self.db = db if db is not None else DollyBaser(name=hby.name, base=hby.base, temp=hby.temp)
         self.kvy = Kevery(db=hby.db, cf=_RequestPolicy(), enableKram=True,
                           lax=False, local=False)
         self.rgy = Regery(hby, name=hby.name, base=hby.base, temp=hby.temp, baser=baser)
         self.pruner = Pruner(self.kvy.kramer, tock=1.0)
-        self.legacy = legacy if legacy is not None else verifying.Verifier(hby,
-            reger=legacyEventing.Reger(name=hby.name, base=hby.base, temp=hby.temp))
+        self.vry = vry if vry is not None else verifying.Verifier(hby,
+            reger=eventing.Reger(name=hby.name, base=hby.base, temp=hby.temp))
         # Native Unblind authenticates through hab.rvy: use that same owner for
         # intake, endpoint evidence, reply escrows and auxiliary attachments.
         self.rvy = hab.rvy
         self.kvy.rvy = self.rvy
         self.kvy.registerReplyRoutes(self.rvy.rtr)
-        self.legacy.tvy.rvy = self.rvy
-        self.legacy.tvy.registerReplyRoutes(self.rvy.rtr)
-        self.inquisitor = agenting.WitnessInquisitor(hby=hby)
-        self.exc = DollyExchanger(hby, self.rgy)
+        self.exc = exchanging.Exchanger(hby, handlers=[])
+        ipexing.loadHandlers(hby, self.exc, Notices(), rgy=self.rgy)
         self.acdcV2Ipex = self.exc.routes['/ipex/grant']
         self.unblind = Unblind(hab, self.exc, self.rgy, states=('issued', 'revoked', ''))
         self.kvy.qvy = self.unblind
@@ -293,7 +254,7 @@ class Context(doing.DoDoer):
         self.app.add_route('/', IntakeEnd(self))
         self.app.add_route('/health', HealthEnd())
         self.clients = set()
-        super().__init__(doers=[self.pruner, self.inquisitor, doing.doify(self.workDo)])
+        super().__init__(doers=[self.pruner, doing.doify(self.workDo)])
 
     def _parser(self, version, *, stream=False):
         """Return a parser sharing this context's processors and section owner.
@@ -305,7 +266,7 @@ class Context(doing.DoDoer):
         klass = StreamParser if stream else Parser
         extra = {"context": self} if stream else {}
         return klass(**extra, kvy=self.kvy, rgy=self.rgy,
-            tvy=self.legacy.tvy, vry=self.legacy, exc=self.exc, rvy=self.rvy,
+            vry=self.vry, exc=self.exc, rvy=self.rvy,
             local=False, version=version)
 
     def ingest(self, raw, version=Vrsn_2_0):
@@ -340,11 +301,10 @@ class Context(doing.DoDoer):
         Parser method is called directly to avoid the TCP dispatch hook recursing.
         """
         serder, submitted, submission = exts['serder'], None, None
-        if serder.ilk in ('vcp', 'vrt', 'iss', 'bis', 'rev', 'brv'):
-            if self.legacy.reger.tels.get(keys=serder.pre, on=serder.sn) == serder.said:
-                return None  # Exact already-verified legacy TEL replay.
+        if serder.pvrsn != Vrsn_2_0:
+            raise ValidationError('Dolly accepts only v2 protocol messages')
         if serder.ilk in ('xip', 'exn') and serder.route == '/ipex/grant':
-            recipient = serder.sad.get('ri') if serder.pvrsn.major == 2 else serder.sad['a'].get('i')
+            recipient = serder.sad.get('ri')
             if recipient != self.hab.pre:
                 raise ValidationError('grant is addressed to a different disclosee')
             registries = sorted({regid for item in exts.get('nests', [])
@@ -353,7 +313,7 @@ class Context(doing.DoDoer):
             submitted = serder.said
         try:
             Parser.msgProcess(parser, exts, kvy=self.kvy,
-                tvy=self.legacy.tvy, vry=self.legacy, exc=self.exc, rvy=self.rvy)
+                tvy=None, vry=self.vry, exc=self.exc, rvy=self.rvy)
         except KEL_DEPENDENCIES + (MissingChainError, MissingSchemaError):
             pass  # Concrete processors already retained their dependencies.
         self._promoteSchemas()
@@ -369,7 +329,7 @@ class Context(doing.DoDoer):
         Other section kinds stay held material. Non-JSON schema commitments are
         not transcoded into a different $id, and no held section expands enst.
         """
-        for _, message in self.legacy.reger.sections.getTopItemIter():
+        for _, message in self.vry.reger.sections.getTopItemIter():
             if message.ilk != 'sch' or message.kind != Kinds.json:
                 continue
             if not message.verify():
@@ -506,103 +466,6 @@ class Context(doing.DoDoer):
                 recordedObservation=asdict(record) if record is not None else None))
         return sources
 
-    def _legacyCredential(self, exn):
-        """Return a core-verified legacy credential only with fresh source standing.
-
-        exn is a retained v1 grant. Embedded issuance proves history; configured
-        source-authenticated TEL state notification proves application freshness.
-        Missing evidence raises MissingChainError and starts normal TEL queries;
-        invalid proof or a non-issued current state raises ValidationError."""
-        exchanging.verify(self.hby, exn)
-        _, pathed = exchanging.cloneMessage(self.hby, exn.said)
-        embeds = exn.sad.get('e', {})
-        if 'acdc' not in embeds:
-            raise ValidationError('legacy grant has no credential')
-        parser = self._parser(Vrsn_1_0)
-        credential = SerderACDC(sad=embeds['acdc'])
-        for label in ('anc', 'iss', 'acdc'):
-            if label not in embeds:
-                continue
-            serder = (SerderACDC if label == 'acdc' else SerderKERI)(sad=embeds[label])
-            if label == 'iss' and self.legacy.reger.tels.get(keys=serder.pre, on=serder.sn) == serder.said:
-                continue
-            if label == 'acdc' and self.legacy.reger.saved.get((credential.said,)) is not None:
-                continue
-            try:
-                parser.parseOne(ims=bytearray(serder.raw) + pathed.get(label, b''))
-            except KEL_DEPENDENCIES + (MissingRegistryError, MissingAnchorError, MissingSenderKeyStateError) as error:
-                self._queryLegacy(credential)
-                raise MissingChainError(str(error)) from error
-        self.legacy.tvy.processEscrows()
-        self.legacy.processEscrows()
-        if self.legacy.reger.saved.get((credential.said,)) is None:
-            raise MissingChainError('legacy credential verification is pending')
-        tever = self.legacy.tevers.get(credential.regid)
-        state = tever.vcState(credential.said) if tever else None
-        if state is None or state.et not in ('iss', 'bis'):
-            raise ValidationError('credential is not currently issued')
-        observation = self.db.observed.get(('legacy', credential.said))
-        if observation is not None and observation.head == state.d and observation.observer in self.legacySources:
-            age = (helping.nowUTC() - helping.fromIso8601(observation.observed)).total_seconds()
-            if 0 <= age <= self.maximumAge:
-                return credential
-        self._queryLegacy(credential)
-        raise MissingChainError('legacy issuance is authentic; current TEL observation is not established')
-
-    def _queryLegacy(self, credential):
-        """Queue conventional v1 TEL/TSN requests for a credential's configured sources.
-
-        Args:
-            credential (SerderACDC): Retained legacy credential fixing issuer, registry,
-            and credential SAIDs for both queries.
-
-        Returns:
-            None. With no sources or a recent outstanding request, performs no new work;
-            otherwise persists a request timestamp and queues tels and tsn acquisition.
-
-        Queued queries establish no standing, observation, or hook delivery. Actual
-        source replies must pass the ordinary legacy processors and response freshness
-        policy. Storage/time parsing errors propagate rather than producing a marker."""
-        if not self.legacySources:
-            return
-        previous = self.db.legacyQueries.get((credential.said,))
-        if previous is not None:
-            age = (helping.nowUTC() - helping.fromIso8601(previous.started)).total_seconds()
-            if age < self.maximumAge:
-                return
-        record = LegacyQuery(credential.said, credential.regid, credential.israid, helping.nowIso8601())
-        self.db.legacyQueries.pin((credential.said,), record)
-        for route in ('tels', 'tsn'):
-            self.inquisitor.telquery(ri=credential.regid, i=credential.said, pre=credential.israid,
-                src=self.hab.pre, hab=self.hab, wits=list(self.legacySources), r=route,
-                version=Vrsn_1_0, pvrsn=Vrsn_1_0, gvrsn=Vrsn_1_0, kind=Kinds.json)
-
-    def _legacyReports(self):
-        """Consume only core source-authenticated BADA-accepted credential TSNs.
-
-        This is application freshness relative to the configured source's report,
-        not cryptographic proof of global latest state or historical authority.
-        """
-        for keys, query in self.db.legacyQueries.getTopItemIter():
-            for source in self.legacySources:
-                current = self.legacy.reger.txnsb.current((query.credential, source))
-                if current is None:
-                    continue
-                reply = self.legacy.reger.txnsb.serderdb.get((current.qb64,))
-                if reply is None or reply.said == query.reply:
-                    continue
-                stamp = helping.fromIso8601(reply.sad['dt'])
-                age = (helping.nowUTC() - stamp).total_seconds()
-                if stamp < helping.fromIso8601(query.started) or not 0 <= age <= self.maximumAge:
-                    continue
-                state = self.legacy.tevers[query.registry].vcState(query.credential)
-                if state is None or state.d != current.qb64:
-                    continue
-                self.db.observed.pin(('legacy', query.credential),
-                    Observation(reply.sad['dt'], current.qb64, source))
-                query.reply = reply.said
-                self.db.legacyQueries.pin(keys, query)
-
     def _policy(self, exn, credential):
         """Apply the same exact-view application policy before approval and Admit."""
         if exn.sad.get('ri') != self.hab.pre:
@@ -692,7 +555,7 @@ class Context(doing.DoDoer):
         return admitted.said
 
     def _deliveryAdmission(self, keys, record):
-        """Gate old undelivered native decisions using existing protocol evidence.
+        """Gate old undelivered v2 IPEX presentations using upstream evidence.
 
         This never creates a response, renews approval or reprojects a credential.
         Successfully delivered history is left as recorded.
@@ -700,15 +563,13 @@ class Context(doing.DoDoer):
         if record.delivered:
             return True
         exn = self.hby.db.exns.get((record.grant,))
-        if exn is not None and exn.route == '/ipex/grant' and exn.pvrsn == Vrsn_1_0:
-            return True
         try:
             admitted = self._acceptedAdmit(exn) if exn is not None else None
         except (ValidationError, MissingSenderKeyStateError):
             admitted = None
         if admitted is None:
             record.state = 'non-reportable'
-            record.reason = 'native presentation lacks an accepted Admit; fresh Grant required'
+            record.reason = 'v2 IPEX presentation lacks an accepted Admit; fresh Grant required'
             self.db.submissions.pin(keys, record)
             self._abandon(record.grant)
             return False
@@ -726,11 +587,19 @@ class Context(doing.DoDoer):
         """
         self.kvy.processEscrows()
         self.rgy.processEscrows()
-        self.legacy.tvy.processEscrows()
-        self.legacy.processEscrows()
         self.rvy.processEscrowReply()
-        self._legacyReports()
         self._promoteSchemas()
+        # Decide unsupported retained work before core escrow replay can evict
+        # its body. Delivered history and terminal decisions remain untouched.
+        for keys, record in self.db.submissions.getTopItemIter():
+            if record.state != 'pending':
+                continue
+            exn = self.hby.db.exns.get((record.grant,)) or self.hby.db.epse.get((record.grant,))
+            if exn is not None and exn.pvrsn != Vrsn_2_0:
+                record.state = 'rejected'
+                record.reason = 'Dolly accepts only v2 protocol messages'
+                self.db.submissions.pin(keys, record)
+                self._abandon(record.grant)
         self.exc.processEscrow()
         for keys, record in self.db.submissions.getTopItemIter():
             if record.state != 'pending':
@@ -744,45 +613,30 @@ class Context(doing.DoDoer):
                     self._abandon(record.grant)
                 continue
             try:
-                if exn.pvrsn.major == 2:
-                    operation = self._unblinds.get(record.grant)
-                    if operation is not None and not operation['finished']:
-                        self._openings(record, exn)
-                    if not self.exc.complete(record.grant):
-                        self._openings(record, exn)
-                        raise MissingChainError('Grant awaits current issuer-registry openings')
-                    try:
-                        credential = self._acdcV2GrantCredential(exn)
-                    except MissingChainError:
-                        self._openings(record, exn)
-                        raise
-                else:
-                    if not self.exc.complete(record.grant):
-                        continue
-                    credential = self._legacyCredential(exn)
+                operation = self._unblinds.get(record.grant)
+                if operation is not None and not operation['finished']:
+                    self._openings(record, exn)
+                if not self.exc.complete(record.grant):
+                    self._openings(record, exn)
+                    raise MissingChainError('Grant awaits current issuer-registry openings')
+                try:
+                    credential = self._acdcV2GrantCredential(exn)
+                except MissingChainError:
+                    self._openings(record, exn)
+                    raise
                 if credential is None:
                     record.state, record.reason = 'non-reportable', 'grant discloses no credential'
                     self.db.submissions.pin(keys, record)
                     self._abandon(record.grant)
                     continue
-                if exn.pvrsn.major == 2:
-                    schema, values, disclosure = self._policy(exn, credential)
-                    admit = self._admit(record, exn)
-                else:
-                    schema = credential.sad.get('s')
-                    schema = schema.get('$id') if isinstance(schema, dict) else schema
-                    if credential.israid not in self.issuers or schema not in self.schemas:
-                        raise ValidationError('issuer or schema is outside application policy')
-                    values, disclosure = project(credential, self.fields, self.required)
-                    admit = None
+                schema, values, disclosure = self._policy(exn, credential)
+                admit = self._admit(record, exn)
                 record.payload = dict(schema='dolly.accepted-credential/v1',
                     decision='accepted', credential=credential.said, grant=exn.said,
                     issuer=credential.israid, presenter=exn.pre, verifier=self.hab.pre,
                     credentialSchema=schema, protocol=exn.pvrsn.major,
                     business=values, disclosure=disclosure, standing='issued',
-                    acceptedAt=helping.nowIso8601())
-                if admit:
-                    record.payload['admit'] = admit
+                    acceptedAt=helping.nowIso8601(), admit=admit)
                 record.state, record.reason = 'accepted', ''
             except (MissingChainError, MissingSchemaError) as error:
                 record.reason = str(error)
@@ -1011,7 +865,7 @@ class Context(doing.DoDoer):
                 yield tock
 
     def close(self):
-        """Close HTTP clients and the native, legacy/section, and application stores.
+        """Close HTTP clients and the v2, section, and application stores.
 
         Reopening requires a fresh context over the same configured stores.
         Habery ownership remains with the caller.
@@ -1025,7 +879,7 @@ class Context(doing.DoDoer):
             client.close()
         self.db.close()
         self.rgy.close()
-        self.legacy.reger.close()
+        self.vry.reger.close()
 
 
 class IntakeEnd:
@@ -1062,9 +916,9 @@ class IntakeEnd:
                 raw += attachment.encode('ascii')
         default = str((first.gvrsn or first.pvrsn).major) if first else '2'
         genus = genus if genus is not None else default
-        if genus not in ('1', '2'):
-            raise ValidationError('CESR-Genus must be 1 or 2')
-        return raw, Vrsn_1_0 if genus == '1' else Vrsn_2_0
+        if genus != '2':
+            raise ValidationError('Dolly requires CESR-Genus 2')
+        return raw, Vrsn_2_0
 
     def on_post(self, req, rep):
         """Acknowledge parsed intake with 202; map media/framing errors to HTTP.
@@ -1220,7 +1074,7 @@ def setup(hby, hab, *, host='127.0.0.1', port=6644, tcpPort=None,
     """
     context = Context(hby, hab, **kwa)
     doers = [BaserDoer(baser=context.db), BaserDoer(baser=context.rgy.baser),
-             BaserDoer(baser=context.legacy.reger), context]
+             BaserDoer(baser=context.vry.reger), context]
     if port is not None:
         server = createHttpServer(host=host, port=port, app=context.app,
                                   keypath=keypath, certpath=certpath, cafilepath=cafilepath)

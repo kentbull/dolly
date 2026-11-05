@@ -1,6 +1,8 @@
 """Dolly's bounded application work and durable delivery retries."""
 
 from types import MethodType, SimpleNamespace
+from pathlib import Path
+import socket
 
 import pytest
 
@@ -8,6 +10,9 @@ from hio.base import doing, tyming
 from hio.core import http, tcp
 
 from dolly import serving
+from keri.acdc import acdcmap, grant
+from keri.app.habbing import openHby
+from keri.core import Diger, Number, messagize
 
 
 class Store:
@@ -23,7 +28,7 @@ def workContext(records):
     """Build a scheduler-only Context over deterministic durable rows."""
     exns = Store(((record.grant,), SimpleNamespace(
         said=record.grant, route='/ipex/grant',
-        pvrsn=serving.Vrsn_1_0 if record.state == 'accepted' else serving.Vrsn_2_0))
+        pvrsn=serving.Vrsn_2_0))
         for _, record in records)
     context = object.__new__(serving.Context)
     context.db = SimpleNamespace(
@@ -81,34 +86,37 @@ def test_work_loop_rotates_past_eight_unresponsive_registries(monkeypatch):
     work.close()
 
 
-def test_webhook_request_failure_is_backed_off(monkeypatch):
-    """A substituted request-generator OSError retains its row and enters retry."""
-    record = SimpleNamespace(
-        grant="grant-00", state="accepted", delivered=False, payload={"ok": True},
-        admit="", admitSubmitted=False)
-    context = workContext([((record.grant,), record)])
-    calls = []
-
-    def request(self, url, *, body=None, data=None, trust=None):
-        calls.append(url)
-        if False:
-            yield
-        raise OSError("connection refused")
-
-    context.request = MethodType(request, context)
-    tymist = tyming.Tymist(tyme=0.0)
-    work = context.workDo(tymth=tymist.tymen(), tock=0.0)
-    next(work)
-    next(work)
-    assert calls == [context.webhook]
-    assert not record.delivered
-    assert context._deliveryFailures == {record.grant: 1}
-    assert context._deliveryRetry == {record.grant: serving.OUTBOUND_RETRY_INITIAL}
-
-    tymist.tick(tock=1.1)
-    next(work)
-    assert calls == [context.webhook]
-    work.close()
+def test_webhook_request_failure_is_backed_off():
+    """A closed loopback webhook retains real v2 Grant/Admit work with backoff."""
+    with (socket.socket() as endpoint,
+          openHby(name='backoff-issuer') as issuer,
+          openHby(name='backoff-dolly') as verifier):
+        endpoint.bind(('127.0.0.1', 0))  # Bound, never listening: real connection refusal.
+        ihab, dhab = issuer.makeHab(name='issuer'), verifier.makeHab(name='dolly')
+        credential = acdcmap(israid=ihab.pre, attribute=dict(d='', status='authorized'))
+        proof = messagize(credential, tsgs=[(ihab.kever.prefixer,
+            Number(sn=ihab.kever.lastEst.s), Diger(qb64=ihab.kever.lastEst.d),
+            ihab.sign(credential.raw))], framed=False, gvrsn=serving.Vrsn_2_0)
+        context = serving.Context(verifier, dhab, issuers=[ihab.pre],
+            schemas=[credential.schema['$id']], fields={'status': 'a/status'},
+            observer=dict(url='https://unused.test/',
+                cafilepath=str(Path(__file__).with_name('tls') / 'server.pem')),
+            webhook=f'http://127.0.0.1:{endpoint.getsockname()[1]}/', timeout=0.1)
+        try:
+            message, attachment = grant(ihab, dhab.pre, 'webhook retry', origin=proof)
+            assert context.ingest(ihab.replay(gvrsn=serving.Vrsn_2_0)
+                + message.raw + attachment) == [dict(grant=message.said, state='accepted')]
+            record = context.db.submissions.get((message.said,))
+            assert context._acceptedAdmit(message).said == record.admit
+            doing.Doist(real=True, tock=0.01, limit=1.4).do(doers=[context])
+            retained = context.db.submissions.get((record.grant,))
+            assert retained.state == 'accepted' and not retained.delivered
+            assert not retained.admitSubmitted  # No presenter endpoint was configured.
+            assert context._deliveryFailures == {record.grant: 1}
+            assert context._deliveryRetry[record.grant] >= serving.OUTBOUND_RETRY_INITIAL
+            assert not context.clients and not context.deeds
+        finally:
+            context.close()
 
 
 @pytest.mark.parametrize('scope', ['webhook', 'observer'])

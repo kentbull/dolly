@@ -28,7 +28,7 @@ from keri.app.httping import CESR_CONTENT_TYPE
 from keri.core import Blinder, Codens, Compactor, Counter, Diger, Noncer, Number, SealSource, messagize
 from keri.kering import MissingAnchorError, MissingChainError, ValidationError
 from keri.peer import exchanging
-from keri.vdr import eventing as legacy, verifying
+from keri.vdr import eventing, verifying
 from kfobserver.core.evidence import Context as Observer
 from kfobserver.core.evidence_observing import ObservationBaser
 
@@ -82,7 +82,7 @@ def test_retained_grant_opaque_successor_stays_historical_and_pending(tmp_path, 
                 db=DollyBaser(name=verifier.name, headDirPath=str(tmp_path), temp=False),
                 baser=RegBaser(name=verifier.name,
                     headDirPath=str(tmp_path), temp=False),
-                legacy=verifying.Verifier(verifier, reger=legacy.Reger(name=verifier.name,
+                vry=verifying.Verifier(verifier, reger=eventing.Reger(name=verifier.name,
                     headDirPath=str(tmp_path), temp=False)))
             sourceURL = 'https://registrar.test/'
             obs = Observer(observer, readers=[dhab.pre], sources=[observerTrust(sourceURL)],
@@ -93,7 +93,7 @@ def test_retained_grant_opaque_successor_stays_historical_and_pending(tmp_path, 
                 paths = [owner.path for hby in (source, verifier, observer)
                          for owner in (hby.ks, hby.db, hby.cf)]
                 paths += [rgy.baser.path, dolly.db.path, dolly.rgy.baser.path,
-                          dolly.legacy.reger.path,
+                          dolly.vry.reger.path,
                           obs.rgy.baser.path, obs.observations.path]
                 assert all(Path(path).is_relative_to(tmp_path) for path in paths)
                 if phase == 0:
@@ -251,7 +251,7 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                             db=DollyBaser(name=verifier.name, headDirPath=str(tmp_path), temp=False),
                             baser=RegBaser(name=verifier.name,
                                 headDirPath=str(tmp_path), temp=False),
-                            legacy=verifying.Verifier(verifier, reger=legacy.Reger(name=verifier.name,
+                            vry=verifying.Verifier(verifier, reger=eventing.Reger(name=verifier.name,
                                 headDirPath=str(tmp_path), temp=False)))
                         try:
                             if phase == 0:

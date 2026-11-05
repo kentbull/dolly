@@ -9,12 +9,10 @@ from hio.base import doing
 
 from dolly import serving
 from dolly.schemas import load as loadSchema
-from keri import Vrsn_1_0, Vrsn_2_0
 from keri.app.habbing import HaberyDoer
 from keri.app.keeping import Keeper
 from keri.app.oobiing import Oobiery
 from keri.cli.common import Parsery, setupHby
-from keri.core import Schemer
 from keri.kering import AuthError, ConfigurationError
 
 
@@ -32,8 +30,6 @@ def buildParser():
     start.add_argument('--tcp', type=int, help='independent raw CESR TCP listen port')
     start.add_argument('--host', default='127.0.0.1')
     start.add_argument('--kel', action='append', default=[], help='signed public KEL bootstrap file')
-    start.add_argument('--kel-genus', type=int, choices=(1, 2), default=2)
-    start.add_argument('--schema', action='append', default=[], help='explicit legacy JSON schema file')
     start.add_argument('--packaged-schema', action='append', default=[], help='verified Dolly schema manifest name')
     start.add_argument('--no-prompt', action='store_true')
     inspect = commands.add_parser('inspect', parents=[Parsery.keystore()])
@@ -75,15 +71,11 @@ def handler(args):
             raise ConfigurationError('Dolly requires an existing alias')
         httpPort = args.http if args.http is not None else (6644 if args.tcp is None else None)
         context, doers = serving.setup(hby, hab, host=args.host, port=httpPort, tcpPort=args.tcp, **policy)
-        for path in args.schema:
-            schema = Schemer(raw=Path(path).read_bytes())
-            hby.db.schema.pin((schema.said,), schema)
         for name in args.packaged_schema:
             schema = loadSchema(name)
             hby.db.schema.pin((schema.said,), schema)
         for path in args.kel:
-            context.ingest(Path(path).read_bytes(),
-                version=Vrsn_1_0 if args.kel_genus == 1 else Vrsn_2_0)
+            context.ingest(Path(path).read_bytes())
         return [HaberyDoer(habery=hby), *Oobiery(hby).doers, *doers]
     except BaseException:
         if context is not None:
