@@ -1120,7 +1120,7 @@ def test_observer_request_uses_only_configured_ca():
         dolly = Dolly(verifier, hab, issuers=[], schemas=[], fields={},
             observer=observerTrust('https://127.0.0.1:1/', certedhost='localhost'), webhook='http://hook.test/')
         clock = doing.Doist(tock=.03125)
-        clock.enter(doers=[dolly])
+        clock.deeds = clock.enter(doers=[dolly])
         request = dolly.request(dolly.observer, body=b'query', trust=dolly.observerTrust)
         try:
             next(request)
