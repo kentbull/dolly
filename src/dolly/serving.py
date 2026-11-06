@@ -23,12 +23,11 @@ from keri.app.indirecting import createHttpServer
 from dolly.projecting import project
 from keri.app.httping import CESR_CONTENT_TYPE, CESR_ATTACHMENT_HEADER
 from keri.core import (Parser, SerderACDC, SerderKERI, Serdery, GenDex,
-                       BlindState, BoundState, Diger, Kevery, Number, NumDex, Schemer, SealSource,
+                       BlindState, BoundState, Diger, Kevery, Number, Schemer, SealSource,
                        messagize, query as makeQuery)
 from keri.core.kraming import Pruner
 from keri.db import dbing, koming
 from keri.db.basing import BaserDoer
-from keri.db.dbing import snKey
 from keri.help import helping
 from keri.kering import (ValidationError, ExtractionError, ShortageError, MissingChainError, MissingSchemaError,
                          MissingAnchorError, MissingSenderKeyStateError,
@@ -361,50 +360,19 @@ class Context(doing.DoDoer):
         if (response['status'] != 200 or response.get('headers', {}).get(
                 'content-type', '').split(';')[0] != CESR_CONTENT_TYPE):
             return False
-        ims, events = bytearray(response['body']), []
-        parser = self._parser(Vrsn_2_0)
-        try:
-            while ims:
-                size = len(ims)
-                dom = parser.parseOneBare(ims=ims, processive=False, local=False)
-                if dom is None or dom.serder is None or len(ims) >= size:
-                    return False
-                event = dom.serder
-                if event.ilk not in ('rip', 'bup', 'icp', 'dip', 'rot', 'drt', 'ixn', 'rct'):
-                    return False
-                events.append(event)
-            self.ingest(response['body'])
-        except (ValidationError, ExtractionError, ValueError, TypeError):
+        outcomes, refusal = self.rgy.ingest(response['body'], kvy=self.kvy)
+        if refusal is not None or not outcomes or any(
+                outcome.status != 'accepted' for outcome in outcomes):
             return False
-        heads = []
-        for event in events:
-            if isinstance(event, SerderACDC):
-                registry = event.said if event.ilk == 'rip' else event.sad['rd']
-                sequence = Number(numh=event.sad['n']).num
-                accepted = self.rgy.store.seqSaider(registry, sequence)
-                if accepted is None or accepted.qb64 != event.said:
-                    return False
-                if registry == regid:
-                    heads.append((sequence, event.said))
-            elif event.ilk != 'rct' and self.hby.db.kels.getLast(
-                    keys=event.pre, on=event.sn) != event.said:
-                return False
-            elif event.ilk == 'rct' and self._receiptPending(event):
-                return False
+        heads = [(Number(numh=outcome.serder.sad['n']).num, outcome.serder.said)
+                 for outcome in outcomes if isinstance(outcome.serder, SerderACDC)
+                 and (outcome.serder.said if outcome.serder.ilk == 'rip'
+                      else outcome.serder.sad['rd']) == regid]
         head = self.rgy.store.head(regid)
         if not heads or head is None or max(heads)[1] != head.qb64:
             return False
         self.db.observed.pin((regid,), Observation(helping.nowIso8601(), head.qb64, self.observer))
         return True
-
-    def _receiptPending(self, event):
-        """Match unresolved receipts from this response, rather than global escrow counts."""
-        db = self.hby.db
-        if any(said == event.said for said, _ in db.uwes.get(keys=event.pre, on=event.sn)):
-            return True
-        receipts = db.ures.get(keys=(event.pre, Number(num=event.sn, code=NumDex.Huge).qb64))
-        receipts += db.vres.get(keys=snKey(event.pre, event.sn))
-        return any(receipt[0].qb64 == event.said for receipt in receipts)
 
     def _acdcV2GrantCredential(self, exn):
         """Recheck exact retained proof, then apply Dolly's current issued-state policy."""
@@ -485,7 +453,7 @@ class Context(doing.DoDoer):
             if regid := nest.serder.sad.get('rd'):
                 registries.add(regid)
             registries.update(regid for _, regid in
-                self.acdcV2Ipex._presentationRegistries(nest.serder) or [])
+                self.acdcV2Ipex.presentationRegistries(nest.serder) or [])
             registries.update(pre.qb64 for pre, _, _ in nest.ssts
                 if pre.qb64 != nest.serder.israid and pre.qb64 not in self.hby.kevers)
         return registries
@@ -519,7 +487,7 @@ class Context(doing.DoDoer):
         if context is None:
             deadline = self.exc.exchangeDeadline(exn)
             if (deadline is not None and helping.nowUTC() >= deadline
-                    or self.hby.db.erpy.get((exn.said,)) is not None):
+                    or self.exc.response(exn.said) is not None):
                 raise ValidationError('presentation is unavailable, terminated or expired')
             return  # Ordinary schema/chain dependencies have not authorized approval.
         # start() refuses an already sufficient Grant; callers reach here only
@@ -531,12 +499,11 @@ class Context(doing.DoDoer):
 
     def _acceptedAdmit(self, exn):
         """Read and authenticate only this v2 Grant's exact retained response."""
-        link = self.hby.db.erpy.get((exn.said,))
-        admitted = self.hby.db.exns.get((link.qb64,)) if link else None
+        admitted = self.exc.response(exn.said)
         xid = exn.said if exn.ilk == 'xip' else exn.sad.get('x')
         if (exn.pvrsn != Vrsn_2_0 or exn.route != '/ipex/grant'
                 or exn.sad.get('ri') != self.hab.pre
-                or admitted is None or admitted.said != link.qb64 or admitted.pvrsn != Vrsn_2_0
+                or admitted is None or admitted.pvrsn != Vrsn_2_0
                 or admitted.route != '/ipex/admit' or admitted.sad.get('p') != exn.said
                 or admitted.pre != self.hab.pre or admitted.sad.get('ri') != exn.pre
                 or admitted.sad.get('x') != xid):
@@ -546,7 +513,7 @@ class Context(doing.DoDoer):
 
     def _admit(self, record, exn):
         """Accept one local Admit and retain its exact SAID before reporting."""
-        if self.hby.db.erpy.get((exn.said,)) is None:
+        if self.exc.response(exn.said) is None:
             admitted, attachment = ipexing.admit(self.hab, 'admit verified presentation', exn)
             self._parser(Vrsn_2_0).parse(ims=bytearray(admitted.raw + attachment), framed=False)
         admitted = self._acceptedAdmit(exn)
@@ -595,7 +562,7 @@ class Context(doing.DoDoer):
         for keys, record in self.db.submissions.getTopItemIter():
             if record.state != 'pending':
                 continue
-            exn = self.hby.db.exns.get((record.grant,)) or self.hby.db.epse.get((record.grant,))
+            exn = self.hby.db.exns.get((record.grant,)) or self.exc.pending(record.grant)
             if exn is not None and exn.pvrsn != Vrsn_2_0:
                 record.state = 'rejected'
                 record.reason = 'Dolly accepts only v2 protocol messages'
@@ -605,7 +572,7 @@ class Context(doing.DoDoer):
         for keys, record in self.db.submissions.getTopItemIter():
             if record.state != 'pending':
                 continue
-            exn = self.hby.db.exns.get((record.grant,)) or self.hby.db.epse.get((record.grant,))
+            exn = self.hby.db.exns.get((record.grant,)) or self.exc.pending(record.grant)
             if exn is None:
                 if record.grant in self._unblinds:
                     record.state = 'rejected'
@@ -767,7 +734,7 @@ class Context(doing.DoDoer):
                 if record.state != 'pending':
                     continue
                 exn = (self.hby.db.exns.get((record.grant,))
-                       or self.hby.db.epse.get((record.grant,)))
+                       or self.exc.pending(record.grant))
                 if exn is None or exn.pvrsn.major != 2:
                     continue
                 try:
@@ -799,7 +766,7 @@ class Context(doing.DoDoer):
                 if (outbound >= MAX_OUTBOUND_REQUESTS_PER_TURN or operation['sent']
                         or record.state != 'pending'):
                     continue
-                exn = self.hby.db.exns.get((grant,)) or self.hby.db.epse.get((grant,))
+                exn = self.hby.db.exns.get((grant,)) or self.exc.pending(grant)
                 if not self.hab.endsFor(exn.pre):
                     continue
                 try:
@@ -876,8 +843,7 @@ class Context(doing.DoDoer):
         for grant in tuple(self._unblinds):
             self._abandon(grant)
         self._liveGrants.clear()
-        self.rvy.rtr.routes[:] = [route for route in self.rvy.rtr.routes
-                                 if route.resource is not self.unblind]
+        self.rvy.rtr.removeRoute(self.unblind)
         for client in tuple(self.clients):
             client.close()
         self.db.close()
