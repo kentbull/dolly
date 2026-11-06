@@ -36,10 +36,11 @@ def workContext(records):
             getTopItemIter=lambda: iter(records),
             pin=lambda keys, record: None))
     context.hby = SimpleNamespace(
-        db=SimpleNamespace(exns=exns, epse=Store()), kevers={})
+        db=SimpleNamespace(exns=exns), kevers={})
+    context.exc = SimpleNamespace(pending=lambda said: None)
     context.hab = object()
     context.acdcV2Ipex = SimpleNamespace(
-        _presentationRegistries=lambda serder: [])
+        presentationRegistries=lambda serder: [])
     context.observer = "https://observer.invalid"
     context.observerTrust = object()
     context.webhook = "https://webhook.invalid"

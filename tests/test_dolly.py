@@ -52,7 +52,7 @@ def tlsServer(app, certificate=SERVER_TLS):
 
 def registrarContext(hby, *, observers=()):
     """Return the KF registrar's observer-facing full-evidence service."""
-    ctx = makeRegistrar(hby, observers=observers, fullEvidence=True)
+    ctx = makeRegistrar(hby, observers=observers)
     ctx.app = ctx.externalApp
     return ctx
 
