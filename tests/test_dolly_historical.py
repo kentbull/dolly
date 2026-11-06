@@ -309,7 +309,7 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                                 dolly.process()
                                 refused = dolly.db.submissions.get((exn.said,))
                                 assert refused.state == 'rejected'
-                                assert refused.reason == 'credential is not currently issued'
+                                assert refused.reason == 'credential is not currently issued (registry state: revoked)'
                                 assert refused.payload == {} and not refused.delivered
                                 assert dolly.inspectHistorical(exn.said) == expected
                                 # An undisclosed later authority update cannot rewrite

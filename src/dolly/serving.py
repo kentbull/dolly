@@ -426,7 +426,7 @@ class Context(doing.DoDoer):
             if state is None:
                 raise MissingChainError('current registry state is not authenticated')
             if state.state != 'issued':
-                raise ValidationError('credential is not currently issued')
+                raise ValidationError(f'credential is not currently issued (registry state: {state.state})')
         return self._acdcV2GrantDisclosure(exn, nests)[0]
 
     def _acdcV2GrantDisclosure(self, exn, nests=None):
