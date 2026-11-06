@@ -51,14 +51,14 @@ KEL_DEPENDENCIES = (MissingSignatureError, MissingWitnessSignatureError,
 
 
 class _RequestPolicy:
-    """Configure Dolly's authenticated native requests without denial exemptions."""
+    """Configure Dolly's authenticated v2 requests without denial exemptions."""
     def get(self):
         return {'kram': {'enabled': True, 'denials': [],
             'caches': {'~': [1000, 5000, 60000, 300000, 5000, 60000, 300000]}}}
 
 
 def signedQuery(hab, route, attributes=None):
-    """Sign one native observer query using this application's habitat."""
+    """Sign one v2 observer query using this application's habitat."""
     serder = makeQuery(pre=hab.pre, route=route, query=attributes or {},
                    stamp=helping.nowIso8601(), version=Vrsn_2_0)
     return bytes(hab.endorse(serder, last=True, framed=False, gvrsn=Vrsn_2_0))
@@ -69,7 +69,7 @@ class Submission:
     """Persist one grant reporting decision and its exact projected payload.
 
     Pending records retry dependencies; terminal decisions survive reopen.
-    admit identifies the locally accepted native response. admitSubmitted is
+    admit identifies the locally accepted v2 response. admitSubmitted is
     transport acknowledgement; delivered is webhook acknowledgement. Neither
     establishes the presenter's protocol acceptance."""
     grant: str
@@ -208,7 +208,7 @@ def rotated(items, cursor, limit, *, key=lambda item: item):
 class Context(doing.DoDoer):
     """Compose core verification with explicit reporting, projection, and delivery.
 
-    One native registry owner and enabled KRAM owner serve both direct transports.
+    One v2 registry owner and enabled KRAM owner serve both direct transports.
     Historical inspection is separate from current reporting policy."""
     def __init__(self, hby, hab, *, issuers, schemas, fields, required=(),
                  observer, webhook, timeout=5.0,
@@ -238,7 +238,7 @@ class Context(doing.DoDoer):
         self.pruner = Pruner(self.kvy.kramer, tock=1.0)
         self.vry = vry if vry is not None else verifying.Verifier(hby,
             reger=eventing.Reger(name=hby.name, base=hby.base, temp=hby.temp))
-        # Native Unblind authenticates through hab.rvy: use that same owner for
+        # v2 Unblind authenticates through hab.rvy: use that same owner for
         # intake, endpoint evidence, reply escrows and auxiliary attachments.
         self.rvy = hab.rvy
         self.kvy.rvy = self.rvy
@@ -530,7 +530,7 @@ class Context(doing.DoDoer):
         operation['query'] = self.unblind.start(exn.said)
 
     def _acceptedAdmit(self, exn):
-        """Read and authenticate only this native Grant's exact retained response."""
+        """Read and authenticate only this v2 Grant's exact retained response."""
         link = self.hby.db.erpy.get((exn.said,))
         admitted = self.hby.db.exns.get((link.qb64,)) if link else None
         xid = exn.said if exn.ilk == 'xip' else exn.sad.get('x')
@@ -583,7 +583,7 @@ class Context(doing.DoDoer):
     def process(self):
         """Verify current standing, locally accept Admit, then persist reporting.
 
-        Native auxiliary readiness never substitutes for ordinary Grant/DAG and
+        The v2 auxiliary readiness never substitutes for ordinary Grant/DAG and
         application policy verification. Terminal submissions are never renewed.
         """
         self.kvy.processEscrows()
@@ -858,7 +858,7 @@ class Context(doing.DoDoer):
             # Ordinary application retry; no distributed exactly-once promise.
             started = self.tyme
             while self.tyme < started + 1.0:
-                # A native reply can accept its Admit through intake while this
+                # A v2 reply can accept its Admit through intake while this
                 # worker is idle. Deliver new reporting work on the next turn.
                 if self.tyme > started and any(
                         record.state == 'accepted' and not record.delivered
@@ -1018,7 +1018,7 @@ class TcpIntake(doing.Doer):
     def recur(self, tyme):
         """Advance each client once; discard only its own malformed/closed stream.
 
-        Initial JSON metadata selects that connection's parser genus. Native
+        Initial JSON metadata selects that connection's parser genus. v2
         CESR starts at genus 2 and may carry core genus-version counters. A
         malformed initial body closes its connection; incomplete bodies wait.
         No connection toggles the shared enabled KRAM policy.

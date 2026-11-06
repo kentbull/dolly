@@ -319,7 +319,7 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                                     + frame_v2_events(opaqueEvent))
                                 assert dolly.inspectHistorical(exn.said) == expected
                                 # Generic exchange retention authenticates the sender,
-                                # without native IPEX approval of the incomplete proof.
+                                # without v2 IPEX approval of the incomplete proof.
                                 incomplete = messagize(far, bonds=[revoked.data],
                                                        framed=False, gvrsn=Vrsn_2_0)
                                 incompleteGrant, incompleteAtc = grant(issuer, dhab.pre, 'incomplete bound graph',
