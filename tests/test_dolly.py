@@ -376,7 +376,7 @@ def test_dolly_independent_schema_http_arrival_preserves_disclosure(tmp_path, ar
                         if ((arrival != 'before' and phase == 0)
                                 or (arrival == 'restart' and phase == 1)):
                             # Both own-schema and edge-pin dependencies belong to
-                            # ordinary native IPEX admission, before acceptance.
+                            # ordinary v2 IPEX admission, before acceptance.
                             assert not dolly.exc.complete(exn.said)
                             assert verifier.db.emse.get((exn.said, schema)) is not None
                             assert dolly.db.submissions.get((exn.said,)).state == 'pending'
@@ -905,7 +905,7 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
         holderQueries = []
 
         def holderIngest(raw):
-            """Run the holder's actual native processors without a retired wallet facade."""
+            """Run the holder's actual core processors without a retired wallet facade."""
             holderParser.parse(ims=bytearray(raw), framed=False)
             holderKvy.processEscrows()
             hrgy.processEscrows()
@@ -925,7 +925,7 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
             on_put = on_post
 
         def holderReplies(tymth, tock=0.01, **kwa):
-            """Send native reply cues through ordinary authenticated endpoint transport."""
+            """Send v2 reply cues through ordinary authenticated endpoint transport."""
             yield tock
             while True:
                 while holderUnblind.cues:
