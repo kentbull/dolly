@@ -17,6 +17,7 @@ from hio.core import http, tcp
 
 from keri import Vrsn_2_0, Kinds
 from keri.acdc import Regery, ipexing, chaining
+from keri.acdc.salting import RegistryRoot
 from keri.acdc.unblinding import Unblind
 from keri.app import agenting, forwarding
 from keri.app.indirecting import createHttpServer
@@ -243,7 +244,9 @@ class Context(doing.DoDoer):
         self.kvy.rvy = self.rvy
         self.kvy.registerReplyRoutes(self.rvy.rtr)
         self.exc = exchanging.Exchanger(hby, handlers=[])
-        ipexing.loadHandlers(hby, self.exc, Notices(), rgy=self.rgy)
+        ipexing.loadHandlers(hby, self.exc, Notices(), rgy=self.rgy, roots=False)
+        # A verifier never holds registry roots: refuse copies so nothing persists.
+        self.exc.addHandler(exchanging.RouteRefuser(RegistryRoot.Route))
         self.acdcV2Ipex = self.exc.routes['/ipex/grant']
         self.unblind = Unblind(hab, self.exc, self.rgy, states=('issued', 'revoked', ''))
         self.kvy.qvy = self.unblind

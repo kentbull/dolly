@@ -1132,3 +1132,32 @@ def test_observer_request_uses_only_configured_ca():
             request.close()
             clock.exit()
             dolly.close()
+
+
+def test_registry_root_copy_to_dolly_is_refused_and_nothing_persists():
+    """A verifier never holds roots: a /registry/root copy addressed to Dolly is refused."""
+    from keri.acdc.salting import RegistryRoot, rootExn
+    from keri.core import Salter
+
+    with (openHby(name='root-copy-issuer', version=Vrsn_2_0) as issuer,
+          openHby(name='root-copy-dolly', version=Vrsn_2_0) as verifier):
+        ihab, dhab = issuer.makeHab(name='issuer'), verifier.makeHab(name='dolly')
+        Parser(version=Vrsn_2_0, kvy=Kevery(db=issuer.db, lax=True, local=False)).parse(
+            ims=bytearray(dhab.replay(gvrsn=Vrsn_2_0)))
+        registry = Diger(ser=b'registry').qb64
+        wire = rootExn(ihab, dhab.pre, dhab.pre, registry, Salter(raw=b'public-test-root'),
+                       event=Diger(ser=b'bup').qb64)
+        said = Parser(version=Vrsn_2_0).parseOne(ims=bytearray(wire), processive=False).serder.said
+        dolly = Dolly(verifier, dhab, issuers=[ihab.pre], schemas=[], fields={},
+                      observer=observerTrust('https://unused.test/'), webhook='http://unused.test/')
+        try:
+            assert isinstance(dolly.exc.routes[RegistryRoot.Route], exchanging.RouteRefuser)
+            dolly._parser(Vrsn_2_0).parse(
+                ims=bytearray(ihab.replay(gvrsn=Vrsn_2_0) + wire), framed=False)
+            assert ihab.pre in verifier.kevers
+            assert verifier.db.exns.get((said,)) is None
+            assert not verifier.db.essrs.get((said,))
+            assert verifier.db.rrpe.get((said,)) is None
+            assert list(verifier.ks.rroots.getTopItemIter()) == []
+        finally:
+            dolly.close()

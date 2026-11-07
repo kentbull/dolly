@@ -193,7 +193,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "keri", git = "https://github.com/kentbull/keripy.git?rev=65c80c7773992d7359d308bf2c99b41f693d5cc9" },
+    { name = "keri", git = "https://github.com/kentbull/keripy.git?rev=fefc2efb82391ce254217ba89f809c9bbef18c4e" },
     { name = "kf-observer", marker = "extra == 'test'", git = "https://github.com/kentbull/kf-observer.git?rev=3c7bdacd43aa223221d3d86d154e485cc1c95358" },
     { name = "kf-registrar", marker = "extra == 'test'", git = "https://github.com/kentbull/kf-registrar.git?rev=656f73f766af7ab818b5409b5ca5c987eec39df0" },
     { name = "pytest", marker = "extra == 'test'", specifier = "==9.1.1" },
@@ -298,7 +298,7 @@ wheels = [
 [[package]]
 name = "keri"
 version = "2.1.0.dev1"
-source = { git = "https://github.com/kentbull/keripy.git?rev=65c80c7773992d7359d308bf2c99b41f693d5cc9#65c80c7773992d7359d308bf2c99b41f693d5cc9" }
+source = { git = "https://github.com/kentbull/keripy.git?rev=fefc2efb82391ce254217ba89f809c9bbef18c4e#fefc2efb82391ce254217ba89f809c9bbef18c4e" }
 dependencies = [
     { name = "apispec" },
     { name = "blake3" },
