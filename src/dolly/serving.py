@@ -219,7 +219,7 @@ class RefusalReportingGrant(ipexing.IpexHandler):
             isDelegated=lambda pre, delpre: self.hby.kvy.isDelegated(pre, delpre),
             reducers=self.MAryReducers)
         try:
-            verdict = edges.evaluate(origins[0], nodes=nodes, closed=True)
+            verdict = edges.evaluate(origins[0], nodes=nodes, walkPolicy=self.walkPolicy)
             if verdict is None:
                 return 'disclosed chain is malformed or not closed'
             if not refusing(verdict):
