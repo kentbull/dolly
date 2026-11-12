@@ -12,5 +12,33 @@
     "provenance": "Pinned upstream default acm shape for explicit R&D scenarios; not application authorization",
     "source": "kentbull/keripy 64b5c6afc9d23e05e3135353b3396cce28712ce8 src/keri/acdc/messaging.py::acmSchemaDefault; original 18dd8825 src/keri/vc/messaging.py",
     "sourceAuthor": "Samuel M Smith (original function Git attribution)"
+  },
+  "sedi-organizational-unit": {
+    "file": "sedi-organizational-unit.json",
+    "said": "EBbOpBe0lP_epHhakeiXdOmeal3leDfLRf0PAItsanoQ",
+    "provenance": "Draft SEDI 0.1.0 public schema (SEDI Organizational Unit Schema); confers no issuer trust",
+    "source": "kentbull/keripy e60b0c9286225c0d002256552f53a083a62fcf09 tests/sedi/test_sedi.py (snapshot via Locksmith assets/schemas/sedi, keripy d0d5af47 upstream)",
+    "sourceAuthor": "SEDI schema definitions in WebOfTrust keripy tests/sedi (Git attribution of test_sedi.py)"
+  },
+  "sedi-issuing-agent": {
+    "file": "sedi-issuing-agent.json",
+    "said": "EGx4BLclkjhaK1501guyBifxuTTJLwuK61InBTdkKF7v",
+    "provenance": "Draft SEDI 0.1.0 public schema (SEDI Issuing Agent Schema); confers no issuer trust",
+    "source": "kentbull/keripy e60b0c9286225c0d002256552f53a083a62fcf09 tests/sedi/test_sedi.py (snapshot via Locksmith assets/schemas/sedi, keripy d0d5af47 upstream)",
+    "sourceAuthor": "SEDI schema definitions in WebOfTrust keripy tests/sedi (Git attribution of test_sedi.py)"
+  },
+  "sedi-core-identity": {
+    "file": "sedi-core-identity.json",
+    "said": "EN0JtdzBmFuTUzyJG9CXZhtdu-bW0V6L95bsVBzi-cY-",
+    "provenance": "Draft SEDI 0.1.0 public schema (SEDI Core Schema); confers no issuer trust",
+    "source": "kentbull/keripy e60b0c9286225c0d002256552f53a083a62fcf09 tests/sedi/test_sedi.py (snapshot via Locksmith assets/schemas/sedi, keripy d0d5af47 upstream)",
+    "sourceAuthor": "SEDI schema definitions in WebOfTrust keripy tests/sedi (Git attribution of test_sedi.py)"
+  },
+  "sedi-residence": {
+    "file": "sedi-residence.json",
+    "said": "EH5hn7CbtDFxhS3IKioC8P-e4YyZoxqzhRpr4X_e32BD",
+    "provenance": "Draft SEDI 0.1.0 public schema (SEDI Residence Schema); confers no issuer trust",
+    "source": "kentbull/keripy e60b0c9286225c0d002256552f53a083a62fcf09 tests/sedi/test_sedi.py (snapshot via Locksmith assets/schemas/sedi, keripy d0d5af47 upstream)",
+    "sourceAuthor": "SEDI schema definitions in WebOfTrust keripy tests/sedi (Git attribution of test_sedi.py)"
   }
 }
