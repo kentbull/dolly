@@ -310,7 +310,9 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                                 refused = dolly.db.submissions.get((exn.said,))
                                 assert refused.state == 'rejected'
                                 assert refused.reason == 'credential is not currently issued (registry state: revoked)'
-                                assert refused.payload == {} and not refused.delivered
+                                assert refused.payload['decision'] == 'rejected'
+                                assert refused.payload['reason'] == refused.reason
+                                assert refused.spurn and not refused.delivered
                                 assert dolly.inspectHistorical(exn.said) == expected
                                 # An undisclosed later authority update cannot rewrite
                                 # the retained bound graph's selected proof prefix.
@@ -345,7 +347,9 @@ def test_historical_bound_graph_inspection_is_not_current_reporting(tmp_path):
                             assert dolly.inspectHistorical(exn.said) == expected
                             doing.Doist(real=True, tock=0.01, limit=0.2).do(
                                 doers=[http.ServerDoer(server=server), dolly])
-                            assert received == []
+                            # Only the revoked Grant's rejection may reach the hook.
+                            assert all(payload['decision'] == 'rejected' and payload['grant'] == exn.said
+                                       for payload in received)
                         finally:
                             dolly.close()
             finally:

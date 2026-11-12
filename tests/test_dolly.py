@@ -1,5 +1,6 @@
 """Dolly acceptance requires actual protocol proofs and actual webhook HTTP."""
 import json
+import functools
 from pathlib import Path
 import ssl
 
@@ -17,6 +18,7 @@ from dolly.serving import Context as Dolly, Notices, TcpIntake, _RequestPolicy
 from keri.app.httping import CESR_CONTENT_TYPE, CESR_ATTACHMENT_HEADER
 from keri.core import (Blinder, Noncer, Compactor, messagize, Counter, Codens, Number, Diger,
                        BlindState, BoundState, SealEvent, Parser, Kevery)
+from keri.kering import ValidationError
 from keri.peer import exchanging
 from keri.vdr import eventing, verifying
 from keri.acdc import Regery, Registrar as AcdcV2Registrar, apply, offer, agree, admit, ipexing
@@ -780,7 +782,9 @@ def test_acdc_v2_partial_full_grants_observer_acquisition_and_real_webhooks(bind
             if transport == 'http':
                 assert client.responses.popleft()['status'] == 202
             if binding != 'top':
-                assert received == []
+                # Refused bindings are reported as rejections, never accepted.
+                assert sorted(item['grant'] for item in received) == sorted(exn.said for exn in grants)
+                assert all(item['decision'] == 'rejected' and item['reason'] for item in received)
                 for exn in grants:
                     assert not dolly.exc.complete(exn.said)
                     assert verifier.db.exns.get((exn.said,)) is None
@@ -847,18 +851,52 @@ def test_acdc_v2_partial_full_grants_observer_acquisition_and_real_webhooks(bind
             reg.close()
 
 
-def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http():
-    """The actual app evaluates a rotated issuer/holder graph and exact grant binding."""
+# Far-node issuer, near-issuer delegation and expected outcome per Edge
+# Operator. Refused cases present a flow-starting Grant so Dolly can spurn it.
+CHAIN_CASES = {
+    'I2I-issuee-issues': dict(op='I2I', farIssuer='authority'),
+    'I1I-same-issuer': dict(op='I1I', farIssuer='issuer'),
+    'I1I-wrong-issuer': dict(op='I1I', farIssuer='authority', refused='I1I edge'),
+    'DI1I-anchored-delegate': dict(op='DI1I', farIssuer='authority', delegated=True),
+    'DI1I-unrelated-issuer': dict(op='DI1I', farIssuer='authority', refused='DI1I edge'),
+    'DI1I-pending-anchor': dict(op='DI1I', farIssuer='authority', delegated=True, pending=True),
+}
+
+
+def approveDelegate(delegator, delegate):
+    """Anchor the delegate's latest establishment event in the delegator's KEL."""
+    delegator.interact(data=[SealEvent(i=delegate.pre, s=delegate.kever.serder.snh,
+                                       d=delegate.kever.serder.said)._asdict()])
+
+
+@pytest.mark.parametrize('case', CHAIN_CASES.values(), ids=CHAIN_CASES.keys())
+def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http(case, monkeypatch):
+    """The actual app evaluates a rotated issuer/holder graph and exact grant binding.
+
+    The near node's edge carries one unary Operator. I2I, I1I with one issuer,
+    and DI1I from an anchored delegate are accepted with an Admit. Unequal I1I
+    issuers or a DI1I near issuer that is not delegated are refused: Dolly
+    sends no Admit, reports ``decision: rejected`` with the edge reason and
+    spurns the flow-starting Grant to its presenter. A pending DI1I stays
+    escrowed until the delegator's anchoring KEL arrives, then is accepted.
+    Policy ``issuers`` names only the near (delegate) issuer.
+    """
+    operator, refused = case['op'], case.get('refused')
+    delegated, pending = case.get('delegated', False), case.get('pending', False)
     with (openHby(name='graph-issuer', version=Vrsn_2_0) as issuer,
           openHby(name='graph-holder', bran='0123456789abcdefghijk', version=Vrsn_2_0) as holder,
           openHby(name='graph-registrar', version=Vrsn_2_0) as registrar,
           openHby(name='graph-observer', version=Vrsn_2_0) as observer,
           openHby(name='graph-dolly', bran='0123456789abcdefghijk', version=Vrsn_2_0) as verifier):
-        authority, ihab = issuer.makeHab(name='authority'), issuer.makeHab(name='issuer')
+        authority = issuer.makeHab(name='authority')
+        ihab = issuer.makeHab(name='issuer', delpre=authority.pre if delegated else None)
+        if delegated:
+            approveDelegate(authority, ihab)
+        farIssuer = ihab if case['farIssuer'] == 'issuer' else authority
         hhab, ohab, dhab = holder.makeHab(name='holder'), observer.makeHab(name='observer'), verifier.makeHab(name='dolly')
         irgy, hrgy = Regery(hby=issuer, temp=True), Regery(hby=holder, temp=True)
         irar, hrar = AcdcV2Registrar(irgy), AcdcV2Registrar(hrgy)
-        farReg = irar.makeRegistry(name='authority', prefix=authority.pre)
+        farReg = irar.makeRegistry(name='authority', prefix=farIssuer.pre)
         nearReg = irar.makeRegistry(name='entitlement', prefix=ihab.pre)
         presentationReg = hrar.makeRegistry(name='presentation', prefix=hhab.pre)
 
@@ -870,20 +908,22 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
 
         rips = (irgy.store.event(farReg.regk), irgy.store.event(nearReg.regk),
                 hrgy.store.event(presentationReg.regk))
-        for hab, registry, rip in zip((authority, ihab, hhab), (farReg, nearReg, presentationReg), rips):
+        for hab, registry, rip in zip((farIssuer, ihab, hhab), (farReg, nearReg, presentationReg), rips):
             anchor(hab, registry, rip)
-        far = acdcmap(israid=authority.pre, regid=farReg.regk, iseaid=ihab.pre,
+        far = acdcmap(israid=farIssuer.pre, regid=farReg.regk, iseaid=ihab.pre,
                       attribute=dict(d='', authority='may-issue-entitlement'))
         full = acdcmap(israid=ihab.pre, regid=nearReg.regk, iseaid=hhab.pre, uuid=Noncer().qb64,
             attribute={'d': '', 'rd': presentationReg.regk, 'u': Noncer().qb64,
                 'entitlement': {'d': '', 'u': Noncer().qb64, 'value': 'use-service'},
                 'private': {'d': '', 'u': Noncer().qb64, 'value': 'not-negotiated'}},
-            edge={'d': '', 'authority': {'d': '', 'n': far.said, 's': far.schema['$id'], 'o': 'I2I'}})
+            edge={'d': '', 'authority': {'d': '', 'n': far.said, 's': far.schema['$id'], 'o': operator}})
         farProof, farIss = irar.issue(farReg, acdc=far)
         nearProof, nearIss = irar.issue(nearReg, acdc=full)
-        anchor(authority, farReg, farIss)
+        anchor(farIssuer, farReg, farIss)
         anchor(ihab, nearReg, nearIss)
         ihab.rotate(version=Vrsn_2_0, gvrsn=Vrsn_2_0)
+        if delegated:
+            approveDelegate(authority, ihab)
         compact = Compactor(mad=dict(full.sad['a']), makify=True, kind=Kinds.json)
         compact.compact(paths=['a/entitlement/'], root='a')
         partial = acdcmap(israid=ihab.pre, regid=nearReg.regk, iseaid=hhab.pre,
@@ -907,7 +947,8 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
         def holderIngest(raw):
             """Run the holder's actual core processors without a retired wallet facade."""
             holderParser.parse(ims=bytearray(raw), framed=False)
-            holderKvy.processEscrows()
+            for _ in range(3):  # Delegated events settle over escrow passes.
+                holderKvy.processEscrows()
             hrgy.processEscrows()
             holderExc.processEscrow()
 
@@ -956,6 +997,11 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
             def on_post(self, req, rep):
                 """Record the projected JSON body and acknowledge actual webhook delivery."""
                 payload = req.media
+                if payload['decision'] == 'rejected':
+                    assert verifier.db.erpy.get((payload['grant'],)) is None
+                    received.append(payload)
+                    rep.media = {'received': True}
+                    return
                 admitted = verifier.db.exns.get((payload['admit'],))
                 assert admitted is not None and dolly.exc.complete(admitted.said)
                 assert admitted.sad['p'] == payload['grant']
@@ -993,7 +1039,7 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
                 observerTrust(urls[0], certedhost='localhost'))
             obs.sources = (source,)
             obs.urls = frozenset([source.url])
-            dolly = Dolly(verifier, dhab, issuers=[ihab.pre, authority.pre],
+            dolly = Dolly(verifier, dhab, issuers=[ihab.pre],
                 schemas=[full.schema['$id']], fields={'entitlement': 'a/entitlement/value',
                     'private': 'a/private/value'}, required=['entitlement'],
                 observer=observerTrust(urls[1], certedhost='localhost'), webhook=urls[3] + 'hook')
@@ -1028,26 +1074,36 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
 
             plan = [[full.schema['$id'], '/', []],
                     [far.schema['$id'], '/e/authority/_/', []]]
-            application, aatc = apply(dhab, hhab.pre, 'request entitlement chain', modifiers={'dp': [plan]})
-            dolly.ingest(application.raw + aatc)
             send(urls[2] + 'ingest', dhab.replay(gvrsn=Vrsn_2_0)
                 + dhab.makeEndRole(eid=dhab.pre, version=Vrsn_2_0, gvrsn=Vrsn_2_0)
-                + dhab.makeLocScheme(url=dollyURL, version=Vrsn_2_0, gvrsn=Vrsn_2_0)
-                + application.raw + aatc)
-            assert holderExc.complete(application.said)
-            offered, oatc = offer(hhab, 'disclose selected entitlement', origin=partial,
-                                  artifacts=[far], apply=application)
-            holderIngest(offered.raw + oatc)
-            send(dollyURL, hhab.replay(gvrsn=Vrsn_2_0) + offered.raw + oatc)
-            assert dolly.exc.complete(offered.said)
-            agreed, gatc = agree(dhab, 'agree to this chain disclosure', offered)
-            dolly.ingest(agreed.raw + gatc)
-            send(urls[2] + 'ingest', agreed.raw + gatc)
-            assert holderExc.complete(agreed.said)
+                + dhab.makeLocScheme(url=dollyURL, version=Vrsn_2_0, gvrsn=Vrsn_2_0))
+            if refused:
+                # Offer verification would already refuse this chain; present
+                # it unsolicited so the refusal is a spurnable Grant decision.
+                prior = dict(modifiers={'dp': [plan]})
+                # The presentation registry commits the draft body, so the
+                # final xip must reuse its nonce; grant() draws a fresh one.
+                monkeypatch.setattr(ipexing, 'exchept',
+                                    functools.partial(ipexing.exchept, nonce=Noncer().qb64))
+            else:
+                application, aatc = apply(dhab, hhab.pre, 'request entitlement chain', modifiers={'dp': [plan]})
+                dolly.ingest(application.raw + aatc)
+                send(urls[2] + 'ingest', application.raw + aatc)
+                assert holderExc.complete(application.said)
+                offered, oatc = offer(hhab, 'disclose selected entitlement', origin=partial,
+                                      artifacts=[far], apply=application)
+                holderIngest(offered.raw + oatc)
+                send(dollyURL, hhab.replay(gvrsn=Vrsn_2_0) + offered.raw + oatc)
+                assert dolly.exc.complete(offered.said)
+                agreed, gatc = agree(dhab, 'agree to this chain disclosure', offered)
+                dolly.ingest(agreed.raw + gatc)
+                send(urls[2] + 'ingest', agreed.raw + gatc)
+                assert holderExc.complete(agreed.said)
+                prior = dict(agree=agreed)
             hhab.rotate(version=Vrsn_2_0, gvrsn=Vrsn_2_0)
             stamp = helping.nowIso8601()
             draft, _ = grant(hhab, dhab.pre, 'present selected entitlement chain',
-                origin=partial, artifacts=[far], agree=agreed, dt=stamp)
+                origin=partial, artifacts=[far], dt=stamp, **prior)
             # Commit the already final grant body into the holder's public TEL.
             # The public bup and the Grant carry the same exact expanded opening.
             presentationOpening, presented = presentationReg.present(draft)
@@ -1057,16 +1113,25 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
                 gvrsn=Vrsn_2_0)
             proofedFar = messagize(far, bonds=[farProof.data], gvrsn=Vrsn_2_0)
             final, fatc = grant(hhab, dhab.pre, 'present selected entitlement chain',
-                origin=proofedNear, artifacts=[proofedFar], agree=agreed, dt=stamp)
+                origin=proofedNear, artifacts=[proofedFar], dt=stamp, **prior)
             assert final.raw == draft.raw and final.said == draft.said
-            holderIngest(final.raw + fatc)
-            assert holderExc.complete(final.said)
+            if refused:
+                # The holder keeps its own sent Grant (a wallet's preflight is
+                # its business), so a later spurn has its prior to answer.
+                sent = exchanging.Exchanger(holder, handlers=[])
+                Parser(kvy=holderKvy, exc=sent, version=Vrsn_2_0).parse(
+                    ims=bytearray(final.raw + fatc), framed=False)
+                assert sent.complete(final.said)
+            else:
+                holderIngest(final.raw + fatc)
+                assert holderExc.complete(final.said)
             # A newer public head makes the accepted old issuance proof stale.
             # Holder receives the one exact opening separately; Dolly receives
             # only authenticated public evidence through its configured observer.
             holderIngest(tailPublic)
             hrgy.store.putOpening(tail.said, tailOpening)
-            holderUnblind.approve(final.said)
+            if not refused:
+                holderUnblind.approve(final.said)
             assert obs.rgy.store.head(nearReg.regk).qb64 == tail.said
             endpoint = hhab.makeEndRole(eid=hhab.pre, version=Vrsn_2_0, gvrsn=Vrsn_2_0)
             endpoint += hhab.makeLocScheme(url=urls[2], version=Vrsn_2_0, gvrsn=Vrsn_2_0)
@@ -1074,10 +1139,39 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
                 qb64=Blinder.enclose([presentationOpening]),
                 code=Codens.AttachmentGroup, version=Vrsn_2_0)
             assert not reg.ingest(hhab.replay(gvrsn=Vrsn_2_0) + presentationFrame)['rejected']
+            if pending:
+                # The delegate's own KEL without its delegator's anchoring event.
+                dolly.ingest(bytes(b''.join(issuer.db.clonePreIter(pre=ihab.pre, gvrsn=Vrsn_2_0))))
+                assert ihab.pre not in verifier.kevers
             # Intake alone cannot report the stale proof or ask for openings.
             dolly.ingest(hhab.replay(gvrsn=Vrsn_2_0) + endpoint + final.raw + fatc)
             assert received == [] and not holderQueries and not dolly._unblinds
             assert dolly.db.submissions.get((final.said,)).state == 'pending'
+            if pending:
+                # DI1I is a retryable unknown until the delegator's anchor arrives.
+                assert dolly.kvy.isDelegated(ihab.pre, authority.pre) is None
+                dolly.ingest(authority.replay(gvrsn=Vrsn_2_0))
+                for _ in range(3):
+                    dolly.process()
+                assert verifier.kevers[ihab.pre].delpre == authority.pre
+                assert dolly.kvy.isDelegated(ihab.pre, authority.pre) is True
+                assert dolly.db.submissions.get((final.said,)).state == 'pending'
+            if refused:
+                send(dollyURL, hhab.replay(gvrsn=Vrsn_2_0) + final.raw + fatc, duration=3.0)
+                record = dolly.db.submissions.get((final.said,))
+                assert record.state == 'rejected' and refused in record.reason, record
+                assert not record.admit and verifier.db.erpy.get((final.said,)) is None
+                assert received == [record.payload] and record.delivered
+                assert received[0]['decision'] == 'rejected'
+                assert received[0]['reason'] == record.reason
+                assert received[0]['presenter'] == hhab.pre
+                # The presenter holds Dolly's signed refusal of its own Grant.
+                assert record.spurn and record.spurnSubmitted
+                assert holderExc.complete(record.spurn)
+                spurned = holder.db.exns.get((record.spurn,))
+                assert spurned.route == '/ipex/spurn' and spurned.sad['p'] == final.said
+                assert record.reason in spurned.sad['a']['m']
+                return
             exact = [nest.serder.raw for nest in exchanging.loadParsedNestedSubstreams(verifier, final.said)]
             send(dollyURL, hhab.replay(gvrsn=Vrsn_2_0) + final.raw + fatc, duration=2.5)
             assert dolly.exc.complete(final.said)
@@ -1099,6 +1193,11 @@ def test_two_node_chain_declared_presentation_registry_and_full_ipex_over_http()
             send(dollyURL, final.raw + fatc)
             assert len(received) == len(holderQueries) == 1
             assert dolly.db.submissions.get((final.said,)).payload == received[0]
+            if operator == 'DI1I':
+                # Policy admits the near (delegate) issuer; the delegator alone does not.
+                dolly.issuers = {authority.pre}
+                with pytest.raises(ValidationError, match='outside application policy'):
+                    dolly._policy(final, partial)
         finally:
             for client in clients:
                 client.close()
