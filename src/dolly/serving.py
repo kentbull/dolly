@@ -364,8 +364,8 @@ class Context(doing.DoDoer):
                 'content-type', '').split(';')[0] != CESR_CONTENT_TYPE):
             return False
         outcomes, refusal = self.rgy.ingest(response['body'], kvy=self.kvy)
-        if refusal is not None or not outcomes or any(
-                outcome.status != 'accepted' for outcome in outcomes):
+        if refusal is not None or not outcomes or not all(
+                self._accepted(outcome) for outcome in outcomes):
             return False
         heads = [(Number(numh=outcome.serder.sad['n']).num, outcome.serder.said)
                  for outcome in outcomes if isinstance(outcome.serder, SerderACDC)
@@ -376,6 +376,19 @@ class Context(doing.DoDoer):
             return False
         self.db.observed.pin((regid,), Observation(helping.nowIso8601(), head.qb64, self.observer))
         return True
+
+    def _accepted(self, outcome):
+        """Return whether one observer intake outcome is accepted evidence.
+
+        A replayed delegated rotation can linger in a dependency escrow after
+        the same event was accepted; Regery reports that as pending. The exact
+        SAID at its sequence number in the accepted KEL is acceptance.
+        """
+        if outcome.status == 'accepted':
+            return True
+        serder = outcome.serder
+        return (outcome.status == 'pending' and isinstance(serder, SerderKERI)
+                and self.hby.db.kels.getLast(keys=serder.pre, on=serder.sn) == serder.said)
 
     def _acdcV2GrantCredential(self, exn):
         """Recheck exact retained proof, then apply Dolly's current issued-state policy."""
