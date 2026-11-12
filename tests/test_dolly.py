@@ -780,7 +780,9 @@ def test_acdc_v2_partial_full_grants_observer_acquisition_and_real_webhooks(bind
             if transport == 'http':
                 assert client.responses.popleft()['status'] == 202
             if binding != 'top':
-                assert received == []
+                # Refused bindings are reported as rejections, never accepted.
+                assert sorted(item['grant'] for item in received) == sorted(exn.said for exn in grants)
+                assert all(item['decision'] == 'rejected' and item['reason'] for item in received)
                 for exn in grants:
                     assert not dolly.exc.complete(exn.said)
                     assert verifier.db.exns.get((exn.said,)) is None

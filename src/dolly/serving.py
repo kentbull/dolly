@@ -17,6 +17,7 @@ from hio.core import http, tcp
 
 from keri import Vrsn_2_0, Kinds
 from keri.acdc import Regery, ipexing, chaining
+from keri.acdc.evaluating import EdgeEvaluator
 from keri.acdc.salting import RegistryRoot
 from keri.acdc.unblinding import Unblind
 from keri.app import agenting, forwarding
@@ -27,7 +28,7 @@ from keri.core import (Parser, SerderACDC, SerderKERI, Serdery, GenDex,
                        BlindState, BoundState, Diger, Kevery, Number, Schemer, SealSource,
                        messagize, query as makeQuery)
 from keri.core.kraming import Pruner
-from keri.db import dbing, koming
+from keri.db import dbing, koming, subing
 from keri.db.basing import BaserDoer
 from keri.help import helping
 from keri.kering import (ValidationError, ExtractionError, ShortageError, MissingChainError, MissingSchemaError,
@@ -71,7 +72,9 @@ class Submission:
     Pending records retry dependencies; terminal decisions survive reopen.
     admit identifies the locally accepted v2 response. admitSubmitted is
     transport acknowledgement; delivered is webhook acknowledgement. Neither
-    establishes the presenter's protocol acceptance."""
+    establishes the presenter's protocol acceptance. spurn identifies the
+    signed refusal sent to the presenter of a rejected flow-starting Grant;
+    spurnSubmitted is its transport acknowledgement."""
     grant: str
     registries: list = field(default_factory=list)
     state: str = 'pending'
@@ -80,6 +83,8 @@ class Submission:
     delivered: bool = False
     admit: str = ''
     admitSubmitted: bool = False
+    spurn: str = ''
+    spurnSubmitted: bool = False
 
 
 @dataclass
@@ -159,6 +164,9 @@ class DollyBaser(dbing.LMDBer):
         super().reopen(**kwa)
         self.submissions = koming.Komer(db=self, subkey='submissions.', klas=Submission)
         self.observed = koming.Komer(db=self, subkey='observed.', klas=Observation)
+        # Signed refusal wire keyed by Grant: a refused Grant never enters
+        # the core exchange store, so its spurn cannot be re-serialized there.
+        self.spurns = subing.Suber(db=self, subkey='spurns.')
         return self.opened
 
 
@@ -170,6 +178,65 @@ class Notices:
 
         No notification is an acceptance or delivery acknowledgement."""
         pass
+
+
+class RefusalReportingGrant(ipexing.IpexHandler):
+    """Ordinary v2 IPEX Grant verification that reports why a Grant was refused.
+
+    The core handler returns False for an invalid, malformed or non-retryable
+    unknown Grant and keeps nothing. Dolly still owes its presenter a decision,
+    so a refusal is handed to ``refused(serder, reason)``. Retryable unknowns
+    raise and escrow exactly as before; they are never reported.
+    """
+
+    def __init__(self, hby, notifier, rgy, refused):
+        super().__init__(resource='/ipex/grant', hby=hby, notifier=notifier, rgy=rgy)
+        self.refused = refused
+
+    def verify(self, serder, **kwa):
+        """Return the ordinary verdict, reporting a refusal before returning False."""
+        if super().verify(serder, **kwa):
+            return True
+        self.refused(serder, self.refusalReason(serder, list(kwa.get('nests') or [])))
+        return False
+
+    def refusalReason(self, serder, nests):
+        """Return a short human-readable reason for a refused Grant.
+
+        Recompute read-only, most specific first: the Edge relations alone
+        (node authentication taken as given) name a failing Operator or pin;
+        then the closed selection names a failing node proof or schema; else
+        the IPEX context (thread, recipient, lifetime or plan) refused it.
+        A retryable unknown here cannot be the refusal, so it is passed over.
+        """
+        origins = serder.sad.get('a', {}).get('o') or []
+        if not origins or not nests:
+            return CONTEXT_REFUSAL
+        nodes = {(nest['serder'] if isinstance(nest, dict) else nest.serder).said: nest
+                 for nest in nests}
+        edges = EdgeEvaluator(schemaEvaluator=self.schemaEvaluator,
+            verifyNode=lambda serder, nest, records=None: chaining.valid('authenticated separately'),
+            isDelegated=lambda pre, delpre: self.hby.kvy.isDelegated(pre, delpre),
+            reducers=self.MAryReducers)
+        try:
+            verdict = edges.evaluate(origins[0], nodes=nodes, closed=True)
+            if verdict is None:
+                return 'disclosed chain is malformed or not closed'
+            if not refusing(verdict):
+                verdict, _ = self.verifySelection([nodes[origins[0]], *(
+                    nest for said, nest in nodes.items() if said != origins[0])])
+        except (ValidationError, MissingSchemaError, MissingChainError, ValueError, KeyError):
+            return CONTEXT_REFUSAL
+        return verdict.reason if refusing(verdict) and verdict.reason else CONTEXT_REFUSAL
+
+
+CONTEXT_REFUSAL = 'presentation context refused (thread, recipient, lifetime or disclosure plan)'
+
+
+def refusing(verdict):
+    """Return whether an Edge verdict is a terminal refusal rather than a wait."""
+    return (verdict.verdict == chaining.Verdicts.invalid
+            or verdict.verdict == chaining.Verdicts.unknown and not verdict.retryable)
 
 
 class RequestClientDoer(http.clienting.ClientDoer):
@@ -244,7 +311,13 @@ class Context(doing.DoDoer):
         self.kvy.rvy = self.rvy
         self.kvy.registerReplyRoutes(self.rvy.rtr)
         self.exc = exchanging.Exchanger(hby, handlers=[])
-        ipexing.loadHandlers(hby, self.exc, Notices(), rgy=self.rgy, roots=False)
+        # The ordinary v2 IPEX routes, with Grant refusals reported to Dolly.
+        self._refusals = {}
+        for verb in ('apply', 'offer', 'agree', 'admit', 'spurn'):
+            self.exc.addHandler(ipexing.IpexHandler(resource=f'/ipex/{verb}',
+                hby=hby, notifier=Notices(), rgy=self.rgy))
+        self.exc.addHandler(RefusalReportingGrant(hby, Notices(), self.rgy,
+            refused=lambda serder, reason: self._refusals.__setitem__(serder.said, (serder, reason))))
         # A verifier never holds registry roots: refuse copies so nothing persists.
         self.exc.addHandler(exchanging.RouteRefuser(RegistryRoot.Route))
         self.acdcV2Ipex = self.exc.routes['/ipex/grant']
@@ -580,21 +653,17 @@ class Context(doing.DoDoer):
                 continue
             exn = self.hby.db.exns.get((record.grant,)) or self.exc.pending(record.grant)
             if exn is not None and exn.pvrsn != Vrsn_2_0:
-                record.state = 'rejected'
-                record.reason = 'Dolly accepts only v2 protocol messages'
-                self.db.submissions.pin(keys, record)
-                self._abandon(record.grant)
+                self._reject(keys, record, 'Dolly accepts only v2 protocol messages')
         self.exc.processEscrow()
         for keys, record in self.db.submissions.getTopItemIter():
             if record.state != 'pending':
                 continue
             exn = self.hby.db.exns.get((record.grant,)) or self.exc.pending(record.grant)
             if exn is None:
-                if record.grant in self._unblinds:
-                    record.state = 'rejected'
-                    record.reason = 'presentation is unavailable, terminated or expired'
-                    self.db.submissions.pin(keys, record)
-                    self._abandon(record.grant)
+                if (refusal := self._refusals.pop(record.grant, None)) is not None:
+                    self._reject(keys, record, refusal[1], refusal[0])
+                elif record.grant in self._unblinds:
+                    self._reject(keys, record, 'presentation is unavailable, terminated or expired')
                 continue
             try:
                 operation = self._unblinds.get(record.grant)
@@ -625,10 +694,50 @@ class Context(doing.DoDoer):
             except (MissingChainError, MissingSchemaError) as error:
                 record.reason = str(error)
             except ValidationError as error:
-                record.state, record.reason = 'rejected', str(error)
+                self._reject(keys, record, str(error), exn)
+                continue
             self.db.submissions.pin(keys, record)
             if record.state != 'pending':
                 self._abandon(record.grant)
+        # A refusal without a pending submission (a replayed or foreign Grant)
+        # decides nothing here; never let one outlive this pass.
+        self._refusals.clear()
+
+    def _reject(self, keys, record, reason, exn=None):
+        """Persist one terminal rejection, its webhook payload and presenter refusal.
+
+        Only invalid or non-retryable decisions reach here; retryable unknowns
+        stay pending in escrow. A flow-starting v2 Grant gets a signed
+        /ipex/spurn carrying ``reason`` so the presenter sees the refusal now
+        rather than at its deadline. A Grant answering an Agree or Apply has a
+        prior, and IPEX forbids spurning it, so only the webhook reports that.
+        """
+        record.state, record.reason = 'rejected', reason
+        record.payload = dict(schema='dolly.rejected-presentation/v1',
+            decision='rejected', grant=record.grant,
+            presenter=exn.pre if exn is not None else None, verifier=self.hab.pre,
+            reason=reason, rejectedAt=helping.nowIso8601())
+        if (exn is not None and exn.pvrsn == Vrsn_2_0 and not record.spurn
+                and not exn.sad.get('p')):
+            try:
+                spurned, attachment = ipexing.spurn(self.hab,
+                    f'Dolly refused this presentation: {reason}', exn)
+            except ValueError:
+                spurned = None
+            if spurned is not None:
+                self.db.spurns.pin((record.grant,), bytes(spurned.raw + attachment).decode())
+                record.spurn = spurned.said
+        self.db.submissions.pin(keys, record)
+        self._abandon(record.grant)
+
+    @staticmethod
+    def _owesDelivery(record):
+        """Return whether a decided submission still owes webhook or protocol delivery."""
+        if record.state == 'accepted':
+            return not record.delivered or bool(record.admit and not record.admitSubmitted)
+        if record.state == 'rejected' and record.payload:
+            return not record.delivered or bool(record.spurn and not record.spurnSubmitted)
+        return False
 
     def _sendProtocol(self, destination, wire, grant):
         """Submit exact protocol bytes through ordinary endpoint/mailbox routing.
@@ -738,8 +847,7 @@ class Context(doing.DoDoer):
         while True:
             now = self.tyme
             waitingDelivery = any(
-                record.state == 'accepted' and (not record.delivered
-                    or record.admit and not record.admitSubmitted)
+                self._owesDelivery(record)
                 and now >= self._deliveryRetry.get(record.grant, 0)
                 for _, record in self.db.submissions.getTopItemIter())
             registryBudget = (MAX_OUTBOUND_REQUESTS_PER_TURN // 2
@@ -790,16 +898,13 @@ class Context(doing.DoDoer):
                     operation['sent'] = yield from self._sendProtocol(
                         exn.pre, operation['query'], grant)
                 except ValidationError as error:
-                    record.state, record.reason = 'rejected', str(error)
-                    self.db.submissions.pin((grant,), record)
-                    self._abandon(grant)
+                    self._reject((grant,), record, str(error), exn)
                 outbound += 1
             self.process()
             now = self.tyme
             deliveries = [(keys, record)
                           for keys, record in self.db.submissions.getTopItemIter()
-                          if (record.state == 'accepted' and (not record.delivered
-                              or record.admit and not record.admitSubmitted)
+                          if (self._owesDelivery(record)
                               and now >= self._deliveryRetry.get(record.grant, 0))]
             selected, self._deliveryCursor = rotated(
                 deliveries, self._deliveryCursor,
@@ -808,7 +913,16 @@ class Context(doing.DoDoer):
             for keys, record in selected:
                 if outbound >= MAX_OUTBOUND_REQUESTS_PER_TURN:
                     break
-                if not self._deliveryAdmission(keys, record):
+                if record.state == 'rejected':
+                    if record.spurn and not record.spurnSubmitted:
+                        wire = self.db.spurns.get((record.grant,))
+                        record.spurnSubmitted = bool(wire) and (yield from self._sendProtocol(
+                            record.payload['presenter'], wire.encode(), record.grant))
+                        self.db.submissions.pin(keys, record)
+                        outbound += 1
+                        if outbound >= MAX_OUTBOUND_REQUESTS_PER_TURN:
+                            continue
+                elif not self._deliveryAdmission(keys, record):
                     continue
                 if record.admit and not record.admitSubmitted:
                     exn = self.hby.db.exns.get((record.grant,))
@@ -844,7 +958,7 @@ class Context(doing.DoDoer):
                 # A v2 reply can accept its Admit through intake while this
                 # worker is idle. Deliver new reporting work on the next turn.
                 if self.tyme > started and any(
-                        record.state == 'accepted' and not record.delivered
+                        self._owesDelivery(record) and not record.delivered
                         and self.tyme >= self._deliveryRetry.get(record.grant, 0)
                         for _, record in self.db.submissions.getTopItemIter()):
                     break
