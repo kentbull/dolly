@@ -5,10 +5,10 @@ import json
 from pathlib import Path
 import signal
 
-from hio.base import doing
 
 from dolly import serving
 from dolly.schemas import load as loadSchema
+from keri.app.directing import runController
 from keri.app.habbing import HaberyDoer
 from keri.app.keeping import Keeper
 from keri.app.oobiing import Oobiery
@@ -131,7 +131,7 @@ def main(argv=None):
         if args.command == 'inspect':
             return inspectSubmission(args)
         doers = handler(args)
-        doing.Doist(real=True, tock=0.01).do(doers=doers)
+        runController(doers=doers)  # Doist tick from the doist tock (KERI_DOIST_TOCK)
     except KeyboardInterrupt:
         return 0
     except (AuthError, ConfigurationError, ValueError, OSError) as error:
